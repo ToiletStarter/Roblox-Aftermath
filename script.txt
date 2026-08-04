@@ -8,7 +8,7 @@ local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 
 local PLACE_ID = 112237800564065
-local VERSION = "2.1.0"
+local VERSION = "2.2.0"
 local BASE = "https://raw.githubusercontent.com/ToiletStarter/CantStopMakingReposForThis/refs/heads/main/"
 
 local Log = {
@@ -143,11 +143,30 @@ if game.PlaceId ~= PLACE_ID then
     Log.warn("boot", "place id mismatch: " .. tostring(game.PlaceId))
 end
 
-local GameAssets = Workspace:FindFirstChild("game_assets")
-local Entities = GameAssets and GameAssets:FindFirstChild("Entities")
-local ItemSpawns = GameAssets and GameAssets:FindFirstChild("item_spawns")
-local GroundWeapons = Workspace:FindFirstChild("GroundWeapons")
-local RefillAmmo = Workspace:FindFirstChild("RefillAmmo")
+local function gameAssets()
+    return Workspace:FindFirstChild("game_assets")
+end
+
+local function entitiesFolder()
+    local ga = gameAssets()
+    return ga and ga:FindFirstChild("Entities")
+end
+
+local function itemSpawnsFolder()
+    local ga = gameAssets()
+    return ga and ga:FindFirstChild("item_spawns")
+end
+
+local function groundWeaponsFolder()
+    return Workspace:FindFirstChild("GroundWeapons")
+end
+
+local function refillAmmoFolder()
+    return Workspace:FindFirstChild("RefillAmmo")
+end
+
+local GameAssets = gameAssets()
+local Entities = entitiesFolder()
 local GameConfig = ReplicatedStorage:FindFirstChild("GameConfig")
 local MapData = GameConfig and GameConfig:FindFirstChild("MapData")
 local POIFolder = MapData and MapData:FindFirstChild("POI")
@@ -158,7 +177,7 @@ local GunModifiers = GunEvent and GunEvent:FindFirstChild("GunModifiers")
 Log.info("world", "game_assets=" .. tostring(GameAssets ~= nil)
     .. " Entities=" .. tostring(Entities ~= nil)
     .. " item_spawns=" .. tostring(ItemSpawns ~= nil)
-    .. " GroundWeapons=" .. tostring(GroundWeapons ~= nil))
+    .. " GroundWeapons=" .. tostring(groundWeaponsFolder() ~= nil))
 
 local State = {
     espOn = false,
@@ -171,6 +190,8 @@ local State = {
     weaponOn = false,
     ammoOn = false,
     containerOn = false,
+    airdropOn = false,
+    peekContainers = false,
     vehicleOn = false,
     poiOn = false,
     corpseOn = false,
@@ -234,12 +255,10 @@ local Rigs = {
 local RIG_ROOTS = {}
 
 local function candidateRoots()
-    if #RIG_ROOTS > 0 then
-        return RIG_ROOTS
-    end
     local roots = {}
-    if Entities then
-        roots[#roots + 1] = Entities
+    local ents = entitiesFolder()
+    if ents then
+        roots[#roots + 1] = ents
     end
     local chars = Workspace:FindFirstChild("Characters")
     if chars then
@@ -252,23 +271,30 @@ local function candidateRoots()
     if #roots == 0 then
         roots[#roots + 1] = Workspace
     end
-    RIG_ROOTS = roots
     return roots
 end
 
+local R15_PARTS = {
+    UpperTorso = true,
+    LowerTorso = true,
+    RightUpperArm = true,
+    LeftUpperArm = true,
+    RightUpperLeg = true,
+    LeftUpperLeg = true,
+    RightLowerArm = true,
+    LeftLowerArm = true,
+}
+
 local function looksLikePlayerRig(model)
-    if model:FindFirstChild("Equipment") then
-        return true
-    end
     for _, c in ipairs(model:GetChildren()) do
-        if c:IsA("Accessory") or c:IsA("Shirt") or c:IsA("Pants") then
-            return true
-        end
-        if c:IsA("MeshPart") and (c.Name == "UpperTorso" or c.Name == "LowerTorso") then
+        if R15_PARTS[c.Name] then
             return true
         end
     end
-    return false
+    if model:FindFirstChild("Torso") and model:FindFirstChild("Left Arm") then
+        return false
+    end
+    return model:FindFirstChildOfClass("Humanoid") ~= nil
 end
 
 local function scanRigs(force)
@@ -293,19 +319,27 @@ local function scanRigs(force)
     end
 
     local cam = Workspace.CurrentCamera
-    local localRig, bestD
+    local localRig, bestD, secondD
     if cam then
         local origin = cam.CFrame.Position
         for _, m in ipairs(all) do
             local r = rootOf(m)
             if r then
                 local d = (r.Position - origin).Magnitude
-                if d < 12 and (not bestD or d < bestD) then
-                    localRig, bestD = m, d
+                if not bestD or d < bestD then
+                    localRig, secondD, bestD = m, bestD, d
+                elseif not secondD or d < secondD then
+                    secondD = d
                 end
             end
         end
+        local plausible = bestD and bestD < 40
+        local isolated = (not secondD) or (secondD - (bestD or 0)) > 6
+        if not (plausible and isolated) then
+            localRig = nil
+        end
     end
+    Rigs.localDist = bestD
 
     local function strip(list)
         if not localRig then
@@ -347,6 +381,7 @@ local function rigHealth(model)
 end
 
 local function lootModels()
+    local ItemSpawns = itemSpawnsFolder()
     if not ItemSpawns then
         return {}
     end
@@ -378,8 +413,56 @@ local function namedWorkspaceModels(name, requireChild)
     return out
 end
 
-local function containerModels()
-    return namedWorkspaceModels("Container")
+local function isAirdrop(model)
+    return model:GetAttribute("DropTimestamp") ~= nil
+        or model:FindFirstChild("DropAnimator") ~= nil
+end
+
+local function airdropModels()
+    local out = {}
+    for _, model in ipairs(Workspace:GetChildren()) do
+        if model:IsA("Model") and model.Name == "Container" and isAirdrop(model) then
+            out[#out + 1] = model
+        end
+    end
+    return out
+end
+
+local function lootContainerModels()
+    local out = {}
+    local function consider(model)
+        if model:IsA("Model") and not isAirdrop(model) then
+            local n = model.Name
+            if n == "Container" or n:find("Locker") or n:find("Crate")
+               or n:find("Cabinet") or n:find("Safe") or n:find("Barrel") then
+                out[#out + 1] = model
+            end
+        end
+    end
+    for _, model in ipairs(Workspace:GetChildren()) do
+        consider(model)
+    end
+    local spawns = itemSpawnsFolder()
+    if spawns then
+        for _, model in ipairs(spawns:GetDescendants()) do
+            consider(model)
+        end
+    end
+    return out
+end
+
+local function containerContents(model)
+    local names = {}
+    for _, d in ipairs(model:GetDescendants()) do
+        local display = attr(d, "DisplayName")
+        if display then
+            names[#names + 1] = tostring(display)
+            if #names >= 6 then
+                break
+            end
+        end
+    end
+    return names
 end
 
 local function vehicleModels()
@@ -407,7 +490,36 @@ local function folderChildren(folder)
 end
 
 local esp
+local espZombie
 local entitySpecs = {}
+
+local function styleTree(tree, colour)
+    tree.on = true
+    tree.maxRange, tree.espRange = 5000, 5000
+    tree.box.on = true
+    tree.box.col = colour
+    tree.name.on = true
+    tree.dist.on = true
+    tree.hp.on = true
+end
+
+local function newRosterESP(colour, sourceFn, labelFn)
+    local inst = ESP.new()
+    inst:profile("high")
+    local c = inst.cfg
+    c.on = false
+    c.maxRange, c.espRange = 5000, 5000
+    c.target.on = false
+    c.self.fov.on = false
+    c.radar.on = false
+    c.list.on = false
+    c.threat.on = false
+    styleTree(c.npc, colour)
+    inst:setNPCSource(sourceFn)
+    inst:setNPCLabel(labelFn)
+    inst:start()
+    return inst
+end
 
 local function setupESP()
     if type(ESP) ~= "table" or type(ESP.new) ~= "function" then
@@ -415,46 +527,24 @@ local function setupESP()
         return false
     end
 
-    esp = ESP.new()
-    esp:profile("high")
-
-    local c = esp.cfg
-    c.maxRange, c.espRange = 5000, 5000
-    c.target.on = false
-    c.self.fov.on = false
-    c.radar.on = false
-    c.list.on = false
-    c.threat.on = false
-
-    c.on = false
-
-    c.npc.maxRange, c.npc.espRange = 5000, 5000
-    c.npc.box.on = true
-    c.npc.name.on = true
-    c.npc.dist.on = true
-    c.npc.hp.on = true
-
-    esp:setNPCSource(function()
-        local rigs = scanRigs()
-        local out = {}
-        if State.playerOn then
-            for _, m in ipairs(rigs.players) do
-                out[#out + 1] = m
-            end
+    esp = newRosterESP(Color3.fromRGB(190, 150, 255), function()
+        if not State.playerOn then
+            return {}
         end
-        if State.zombieOn then
-            for _, m in ipairs(rigs.zombies) do
-                out[#out + 1] = m
-            end
-        end
-        return out
+        return scanRigs().players
+    end, function(model)
+        local hp = rigHealth(model)
+        return string.format("Player [%d]", math.floor((hp or 0) + 0.5))
     end)
 
-    esp:setNPCLabel(function(model)
+    espZombie = newRosterESP(Color3.fromRGB(255, 135, 135), function()
+        if not State.zombieOn then
+            return {}
+        end
+        return scanRigs().zombies
+    end, function(model)
         local hp = rigHealth(model)
-        local isPlayer = looksLikePlayerRig(model)
-        return string.format("%s [%d]", isPlayer and "Player" or "Zombie",
-            math.floor((hp or 0) + 0.5))
+        return string.format("Zombie [%d]", math.floor((hp or 0) + 0.5))
     end)
 
     local function group(id, getter, labeler, colour, priority)
@@ -484,22 +574,35 @@ local function setupESP()
     end, Color3.fromRGB(120, 255, 190), 2)
 
     group("weapons", function()
-        return State.weaponOn and folderChildren(GroundWeapons) or {}
+        return State.weaponOn and folderChildren(groundWeaponsFolder()) or {}
     end, function(obj)
         return attr(obj, "DisplayName") or obj.Name
     end, Color3.fromRGB(255, 220, 110), 2)
 
     group("ammo", function()
-        return State.ammoOn and folderChildren(RefillAmmo) or {}
+        return State.ammoOn and folderChildren(refillAmmoFolder()) or {}
     end, function()
         return "Ammo"
     end, Color3.fromRGB(255, 180, 120), 2)
 
-    group("containers", function()
-        return State.containerOn and containerModels() or {}
+    group("airdrops", function()
+        return State.airdropOn and airdropModels() or {}
     end, function()
         return "Airdrop"
     end, Color3.fromRGB(255, 140, 90), 3)
+
+    group("containers", function()
+        return State.containerOn and lootContainerModels() or {}
+    end, function(obj)
+        if not State.peekContainers then
+            return "Container"
+        end
+        local items = containerContents(obj)
+        if #items == 0 then
+            return "Container (empty)"
+        end
+        return "Container: " .. table.concat(items, ", ")
+    end, Color3.fromRGB(200, 190, 120), 3)
 
     group("vehicles", function()
         return State.vehicleOn and vehicleModels() or {}
@@ -533,57 +636,8 @@ local function setupESP()
         entitySpecs.poi.name = false
     end
 
-    esp:start()
-    Log.info("esp", "started, entity groups=" .. tostring(#entitySpecs))
+    Log.info("esp", "player + zombie instances started")
     return true
-end
-
-local aimLegit, aimRage
-
-local function buildAdapter()
-    return {
-        targets = function()
-            local rigs = scanRigs()
-            local out = {}
-            if State.aimPlayersOn then
-                for _, m in ipairs(rigs.players) do
-                    out[#out + 1] = m
-                end
-            end
-            if State.aimZombiesOn then
-                for _, m in ipairs(rigs.zombies) do
-                    out[#out + 1] = m
-                end
-            end
-            return out
-        end,
-        model = function(raw) return raw end,
-        root = rootOf,
-        part = function(model, kind)
-            if kind == "Head" then
-                return model:FindFirstChild("Head")
-            elseif kind == "Torso" then
-                return model:FindFirstChild("UpperTorso")
-                    or model:FindFirstChild("Torso")
-                    or model:FindFirstChild("HumanoidRootPart")
-            end
-            return nil
-        end,
-        health = rigHealth,
-        alive = function(model, raw, health, maxHealth)
-            if maxHealth and maxHealth > 0 then
-                return health > 0
-            end
-            return model ~= nil
-        end,
-        name = function(model)
-            return looksLikePlayerRig(model) and "Player" or "Zombie"
-        end,
-        team = function() return nil end,
-        ignore = function(model)
-            return model == Rigs.localRig
-        end,
-    }
 end
 
 local function setupAim()
@@ -636,6 +690,7 @@ Session.instances = {
     function() return aimLegit end,
     function() return aimRage end,
     function() return esp end,
+    function() return espZombie end,
 }
 
 Session.restore.lighting = {
@@ -754,9 +809,10 @@ do
             State.fullbright = false
             State.noFog = false
             State.fovOverride = false
-            if esp then
-                pcall(function() esp:on(false) end)
-                pcall(function() esp.cfg.npc.on = false end)
+            for _, inst in ipairs({ esp, espZombie }) do
+                if inst then
+                    pcall(function() inst:on(false) end)
+                end
             end
             local l = Session.restore.lighting
             if l then
@@ -778,7 +834,7 @@ do
     })
 end
 
-local function espToggles(section, tree, label)
+local function espToggles(section, tree, defaultColour)
     section:Toggle({
         text = "Boxes",
         default = true,
@@ -832,8 +888,7 @@ local function espToggles(section, tree, label)
     })
     section:Colorpicker({
         text = "Color",
-        default = label == "Players" and Color3.fromRGB(190, 150, 255)
-            or Color3.fromRGB(255, 135, 135),
+        default = defaultColour,
         callback = function(v) tree.box.col = v end,
     })
     section:Slider({
@@ -851,13 +906,19 @@ if espReady then
         local s = tabPlayersV:Section("Players")
         s:Toggle({
             text = "Enable Player ESP",
-            default = true,
+            default = false,
             callback = function(v)
                 State.playerOn = v
-                Log.info("esp", "players=" .. tostring(v))
+                if esp then
+                    esp.cfg.on = v
+                    esp.cfg.npc.on = v
+                    esp:on(v)
+                end
+                Log.info("esp", "players=" .. tostring(v)
+                    .. " cfg.on=" .. tostring(esp and esp.cfg.on))
             end,
         })
-        espToggles(s, esp.cfg.npc, "Players")
+        espToggles(s, esp.cfg.npc, Color3.fromRGB(190, 150, 255))
     end)
 
     panel("Visuals/Zombies", function()
@@ -867,10 +928,16 @@ if espReady then
             default = false,
             callback = function(v)
                 State.zombieOn = v
-                Log.info("esp", "zombies=" .. tostring(v))
+                if espZombie then
+                    espZombie.cfg.on = v
+                    espZombie.cfg.npc.on = v
+                    espZombie:on(v)
+                end
+                Log.info("esp", "zombies=" .. tostring(v)
+                    .. " cfg.on=" .. tostring(espZombie and espZombie.cfg.on))
             end,
         })
-        s:Label("Zombies share the ESP style set on the Players tab.")
+        espToggles(s, espZombie.cfg.npc, Color3.fromRGB(255, 135, 135))
     end)
 
     panel("Visuals/World", function()
@@ -902,23 +969,35 @@ if espReady then
             callback = function(v) State.ammoOn = v end,
         })
 
-        local world = tabWorldV:Section("World Objects")
+        local world = tabWorldV:Section("Containers")
         world:Toggle({
-            text = "Airdrops / Containers",
+            text = "Airdrops",
+            default = false,
+            callback = function(v) State.airdropOn = v end,
+        })
+        world:Toggle({
+            text = "Loot Containers",
             default = false,
             callback = function(v) State.containerOn = v end,
         })
         world:Toggle({
+            text = "Peek Container Contents",
+            default = false,
+            callback = function(v) State.peekContainers = v end,
+        })
+
+        local objects = tabWorldV:Section("World Objects")
+        objects:Toggle({
             text = "Vehicles",
             default = false,
             callback = function(v) State.vehicleOn = v end,
         })
-        world:Toggle({
+        objects:Toggle({
             text = "Bodies / Graves",
             default = false,
             callback = function(v) State.corpseOn = v end,
         })
-        world:Toggle({
+        objects:Toggle({
             text = "Points of Interest",
             default = false,
             callback = function(v) State.poiOn = v end,
@@ -928,7 +1007,9 @@ if espReady then
         tune:Slider({
             text = "Entity Refresh (frames)",
             min = 1, max = 10, step = 1, default = 3,
-            callback = function(v) esp.cfg.perf.entityStep = v end,
+            callback = function(v)
+                if esp then esp.cfg.perf.entityStep = v end
+            end,
         })
     end)
 else
@@ -1152,6 +1233,7 @@ local function buildReport()
     add("rigs -> players  : " .. #rigs.players)
     add("rigs -> zombies  : " .. #rigs.zombies)
     add("local rig        : " .. tostring(rigs.localRig and rigs.localRig.Name or "NOT FOUND"))
+    add("nearest rig dist : " .. tostring(rigs.localDist and string.format("%.1f", rigs.localDist) or "?"))
     add("LP.Character     : " .. tostring(LP.Character and LP.Character.Name or "nil"))
     add("scan roots       : ")
     for _, r in ipairs(candidateRoots()) do
@@ -1214,9 +1296,10 @@ local function buildReport()
 
     add("--- WORLD SOURCES ---")
     add("loot        : " .. #lootModels())
-    add("weapons     : " .. #folderChildren(GroundWeapons))
-    add("ammo        : " .. #folderChildren(RefillAmmo))
-    add("containers  : " .. #containerModels())
+    add("weapons     : " .. #folderChildren(groundWeaponsFolder()))
+    add("ammo        : " .. #folderChildren(refillAmmoFolder()))
+    add("containers  : " .. #lootContainerModels())
+    add("airdrops    : " .. #airdropModels())
     add("vehicles    : " .. #vehicleModels())
     add("corpses     : " .. #corpseModels())
     add("")
@@ -1418,6 +1501,49 @@ Session.track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
         M:SetVisible(true)
     end
 end))
+
+local Visual = {}
+
+function Visual.applyLighting()
+    if not State.fullbright then
+        return
+    end
+    if Lighting.Brightness ~= 3 then Lighting.Brightness = 3 end
+    if Lighting.ClockTime ~= 14 then Lighting.ClockTime = 14 end
+    local grey = Color3.fromRGB(178, 178, 178)
+    if Lighting.Ambient ~= grey then Lighting.Ambient = grey end
+    if Lighting.OutdoorAmbient ~= grey then Lighting.OutdoorAmbient = grey end
+end
+
+function Visual.applyFog()
+    if State.noFog and Lighting.FogEnd < 1e5 then
+        Lighting.FogEnd = 1e6
+    end
+end
+
+function Visual.applyFov()
+    if not State.fovOverride then
+        return
+    end
+    local cam = Workspace.CurrentCamera
+    if cam and math.abs(cam.FieldOfView - State.fovValue) > 0.25 then
+        cam.FieldOfView = State.fovValue
+    end
+end
+
+for _, prop in ipairs({ "Brightness", "ClockTime", "Ambient", "OutdoorAmbient" }) do
+    Session.track(Lighting:GetPropertyChangedSignal(prop):Connect(Visual.applyLighting))
+end
+Session.track(Lighting:GetPropertyChangedSignal("FogEnd"):Connect(Visual.applyFog))
+
+local function bindCameraFov()
+    local cam = Workspace.CurrentCamera
+    if cam then
+        Session.track(cam:GetPropertyChangedSignal("FieldOfView"):Connect(Visual.applyFov))
+    end
+end
+bindCameraFov()
+Session.track(Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindCameraFov))
 
 scanRigs(true)
 Log.info("boot", string.format("ready: rigs=%d players=%d zombies=%d",
