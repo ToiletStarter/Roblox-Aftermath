@@ -31,6 +31,43 @@ local function loadLib(path)
     return value
 end
 
+local GENV = (getgenv and getgenv()) or shared or _G
+local SLOT = "__AFTERMATH_INSTANCE"
+
+local function teardownPrevious()
+    local prev = GENV[SLOT]
+    if type(prev) ~= "table" then
+        return false
+    end
+    GENV[SLOT] = nil
+    if type(prev.unload) == "function" then
+        local ok, err = pcall(prev.unload)
+        if not ok then
+            warn("Aftermath: previous instance unload failed: " .. tostring(err))
+        end
+        return true
+    end
+    return false
+end
+
+local hadPrevious = teardownPrevious()
+
+local Instance_ = {
+    version = VERSION,
+    loadedAt = os.time(),
+    conns = {},
+    restore = {},
+}
+
+function Instance_.track(conn)
+    if conn then
+        Instance_.conns[#Instance_.conns + 1] = conn
+    end
+    return conn
+end
+
+GENV[SLOT] = Instance_
+
 local function notify(title, text, duration)
     pcall(function()
         StarterGui:SetCore("SendNotification", {
@@ -539,6 +576,18 @@ local function setupAim()
     return true
 end
 
+Instance_.restore.lighting = {
+    Brightness = Lighting.Brightness,
+    ClockTime = Lighting.ClockTime,
+    FogEnd = Lighting.FogEnd,
+    Ambient = Lighting.Ambient,
+    OutdoorAmbient = Lighting.OutdoorAmbient,
+}
+do
+    local cam = Workspace.CurrentCamera
+    Instance_.restore.fov = cam and cam.FieldOfView or 70
+end
+
 local okESP, espReady = pcall(setupESP)
 if not okESP then
     warn("Aftermath: ESP setup failed: " .. tostring(espReady))
@@ -954,6 +1003,13 @@ local labelServer = secServer:Label("Server: -")
 local labelPlayers = secServer:Label("Players: -")
 
 secServer:Button({
+    text = "Unload Script",
+    callback = function()
+        Instance_.unload()
+    end,
+})
+
+secServer:Button({
     text = "Copy Job ID",
     callback = function()
         if setclipboard then
@@ -1103,16 +1159,67 @@ M:Schedule("aftermath:visual", function()
     end
 end, 10, -5)
 
-Players.PlayerRemoving:Connect(function(player)
+Instance_.track(Players.PlayerRemoving:Connect(function(player)
     charCache[player] = nil
-end)
+end))
+
+function Instance_.unload()
+    for _, conn in ipairs(Instance_.conns) do
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+    Instance_.conns = {}
+
+    if aim then
+        pcall(function()
+            aim:destroy()
+        end)
+    end
+    if esp then
+        pcall(function()
+            esp:destroy()
+        end)
+    end
+
+    local light = Instance_.restore.lighting
+    if light then
+        pcall(function()
+            Lighting.Brightness = light.Brightness
+            Lighting.ClockTime = light.ClockTime
+            Lighting.FogEnd = light.FogEnd
+            Lighting.Ambient = light.Ambient
+            Lighting.OutdoorAmbient = light.OutdoorAmbient
+        end)
+    end
+
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        if cam and Instance_.restore.fov then
+            cam.FieldOfView = Instance_.restore.fov
+        end
+    end)
+
+    pcall(function()
+        M:Close()
+    end)
+
+    if GENV[SLOT] == Instance_ then
+        GENV[SLOT] = nil
+    end
+end
 
 refreshPlayerModels()
 
-notify("Aftermath v" .. VERSION, "Loaded. Press Right Shift to toggle the menu.", 7)
+notify(
+    "Aftermath v" .. VERSION,
+    (hadPrevious and "Reloaded (previous instance unloaded). " or "Loaded. ")
+        .. "Press Right Shift to toggle the menu.",
+    7
+)
 
 M:Notify({
-    title = "Aftermath",
+    title = hadPrevious and "Aftermath reloaded" or "Aftermath",
     text = string.format(
         "ESP %s | Aim %s",
         espReady and "ready" or "unavailable",
