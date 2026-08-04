@@ -7,29 +7,49 @@ local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 
 local PLACE_ID = 112237800564065
-local VERSION = "1.0.0"
+local VERSION = "2.0.0"
 local BASE = "https://raw.githubusercontent.com/ToiletStarter/CantStopMakingReposForThis/refs/heads/main/"
 
-local function loadLib(path)
-    if type(loadstring) ~= "function" then
-        return nil, "loadstring unavailable"
+--------------------------------------------------------------------------
+-- LOGGING
+--------------------------------------------------------------------------
+
+local Log = {
+    lines = {},
+    max = 600,
+    verbose = false,
+}
+
+function Log.write(level, section, message)
+    local entry = string.format("[%7.2f][%-5s][%-10s] %s",
+        os.clock(), level, section, tostring(message))
+    Log.lines[#Log.lines + 1] = entry
+    if #Log.lines > Log.max then
+        table.remove(Log.lines, 1)
     end
-    local okHttp, source = pcall(function()
-        return game:HttpGet(BASE .. path)
-    end)
-    if not okHttp or type(source) ~= "string" then
-        return nil, "HttpGet failed"
+    if Log.verbose then
+        print(entry)
     end
-    local okCompile, chunk = pcall(loadstring, source)
-    if not okCompile or type(chunk) ~= "function" then
-        return nil, "compile failed"
-    end
-    local okRun, value = pcall(chunk)
-    if not okRun or type(value) ~= "table" then
-        return nil, "module returned " .. typeof(value)
-    end
-    return value
+    return entry
 end
+
+function Log.info(section, message) return Log.write("INFO", section, message) end
+function Log.warn(section, message) return Log.write("WARN", section, message) end
+function Log.err(section, message) return Log.write("ERROR", section, message) end
+
+function Log.probe(section, fn)
+    local ok, result = pcall(fn)
+    if ok then
+        Log.info(section, result)
+    else
+        Log.err(section, result)
+    end
+    return ok, result
+end
+
+--------------------------------------------------------------------------
+-- INSTANCE GUARD
+--------------------------------------------------------------------------
 
 local GENV = (getgenv and getgenv()) or shared or _G
 local SLOT = "__AFTERMATH_INSTANCE"
@@ -43,7 +63,7 @@ local function teardownPrevious()
     if type(prev.unload) == "function" then
         local ok, err = pcall(prev.unload)
         if not ok then
-            warn("Aftermath: previous instance unload failed: " .. tostring(err))
+            warn("Aftermath: previous unload failed: " .. tostring(err))
         end
         return true
     end
@@ -52,21 +72,24 @@ end
 
 local hadPrevious = teardownPrevious()
 
-local Instance_ = {
+local Session = {
     version = VERSION,
-    loadedAt = os.time(),
     conns = {},
     restore = {},
 }
 
-function Instance_.track(conn)
+function Session.track(conn)
     if conn then
-        Instance_.conns[#Instance_.conns + 1] = conn
+        Session.conns[#Session.conns + 1] = conn
     end
     return conn
 end
 
-GENV[SLOT] = Instance_
+GENV[SLOT] = Session
+
+--------------------------------------------------------------------------
+-- LIBRARY LOADING
+--------------------------------------------------------------------------
 
 local function notify(title, text, duration)
     pcall(function()
@@ -78,14 +101,39 @@ local function notify(title, text, duration)
     end)
 end
 
+local function loadLib(path)
+    if type(loadstring) ~= "function" then
+        return nil, "loadstring unavailable"
+    end
+    local okHttp, source = pcall(function()
+        return game:HttpGet(BASE .. path)
+    end)
+    if not okHttp or type(source) ~= "string" then
+        return nil, "HttpGet failed"
+    end
+    local okCompile, chunk = pcall(loadstring, source)
+    if not okCompile or type(chunk) ~= "function" then
+        return nil, "compile failed: " .. tostring(chunk)
+    end
+    local okRun, value = pcall(chunk)
+    if not okRun or type(value) ~= "table" then
+        return nil, "module error: " .. tostring(value)
+    end
+    return value
+end
+
 local UI, uiErr = loadLib("easyui/EasyUiTesting.luau")
 if type(UI) ~= "table" or type(UI.new) ~= "function" then
     notify("Aftermath", "EasyUI failed: " .. tostring(uiErr), 10)
     return
 end
 
-local ESP = loadLib("easyesp/EasyESP.luau")
-local EasyAim = loadLib("easyaim/EasyAim.luau")
+local ESP, espErr = loadLib("easyesp/EasyESP.luau")
+local EasyAim, aimErr = loadLib("easyaim/EasyAim.luau")
+
+Log.info("boot", "EasyUI loaded")
+Log.info("boot", "EasyESP: " .. (ESP and "loaded" or tostring(espErr)))
+Log.info("boot", "EasyAim: " .. (EasyAim and "loaded" or tostring(aimErr)))
 
 local M = UI.new({
     title = "Aftermath | v" .. VERSION,
@@ -94,66 +142,65 @@ local M = UI.new({
     keybindHud = true,
     watermark = true,
     loader = true,
-    loadTime = 1.6,
-    width = 660,
-    height = 500,
+    loadTime = 1.4,
+    width = 700,
+    height = 520,
     accent = Color3.fromRGB(150, 220, 160),
 })
 
 if game.PlaceId ~= PLACE_ID then
-    notify("Aftermath", "Different place id, some features may not resolve.", 8)
+    Log.warn("boot", "place id mismatch: " .. tostring(game.PlaceId))
 end
+
+--------------------------------------------------------------------------
+-- WORLD REFERENCES
+--------------------------------------------------------------------------
 
 local GameAssets = Workspace:FindFirstChild("game_assets")
 local Entities = GameAssets and GameAssets:FindFirstChild("Entities")
 local ItemSpawns = GameAssets and GameAssets:FindFirstChild("item_spawns")
 local GroundWeapons = Workspace:FindFirstChild("GroundWeapons")
 local RefillAmmo = Workspace:FindFirstChild("RefillAmmo")
-
 local GameConfig = ReplicatedStorage:FindFirstChild("GameConfig")
 local MapData = GameConfig and GameConfig:FindFirstChild("MapData")
 local POIFolder = MapData and MapData:FindFirstChild("POI")
-
 local GunSystem = ReplicatedStorage:FindFirstChild("GunSystem")
 local GunEvent = GunSystem and GunSystem:FindFirstChild("Event")
 local GunModifiers = GunEvent and GunEvent:FindFirstChild("GunModifiers")
 
+Log.info("world", "game_assets=" .. tostring(GameAssets ~= nil)
+    .. " Entities=" .. tostring(Entities ~= nil)
+    .. " item_spawns=" .. tostring(ItemSpawns ~= nil)
+    .. " GroundWeapons=" .. tostring(GroundWeapons ~= nil))
+
+--------------------------------------------------------------------------
+-- STATE
+--------------------------------------------------------------------------
+
 local State = {
     espOn = false,
-    playerBox = true,
-    playerName = true,
-    playerDist = true,
-    playerHp = true,
-    playerTracer = false,
-    playerChams = false,
 
+    playerOn = true,
     zombieOn = false,
-    zombieBox = true,
-    zombieName = false,
-    zombieDist = true,
 
     lootOn = false,
     lootRarity = "All",
-    lootRange = 400,
     weaponOn = false,
     ammoOn = false,
     containerOn = false,
     vehicleOn = false,
     poiOn = false,
+    corpseOn = false,
+    spawnOn = false,
 
-    aimOn = false,
-    aimTargetZombies = true,
-    aimTargetPlayers = true,
+    aimPlayersOn = false,
+    aimZombiesOn = false,
+    aimMode = "legit",
 
-    infoHunger = true,
-    infoThirst = true,
-    infoStamina = true,
-    infoSquad = true,
-
-    noFog = false,
-    fullbright = false,
     fovValue = 70,
     fovOverride = false,
+    noFog = false,
+    fullbright = false,
 }
 
 local RARITY_COLORS = {
@@ -167,22 +214,16 @@ local RARITY_COLORS = {
 
 local RARITY_ORDER = { "All", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Unique" }
 
+--------------------------------------------------------------------------
+-- CHARACTER RESOLUTION
+--------------------------------------------------------------------------
+
 local function attr(inst, name)
     if typeof(inst) ~= "Instance" then
         return nil
     end
     local ok, value = pcall(inst.GetAttribute, inst, name)
-    if ok then
-        return value
-    end
-    return nil
-end
-
-local function isCharacterModel(model)
-    if typeof(model) ~= "Instance" or not model:IsA("Model") then
-        return false
-    end
-    return model:FindFirstChild("Humanoid") ~= nil or model:FindFirstChildOfClass("AnimationController") ~= nil
+    return ok and value or nil
 end
 
 local function rootOf(model)
@@ -196,99 +237,158 @@ local function rootOf(model)
         or model:FindFirstChildWhichIsA("BasePart")
 end
 
-local charCache = {}
-
-local function characterOf(player)
-    if player.Character and player.Character.Parent then
-        charCache[player] = player.Character
-        return player.Character
-    end
-    local cached = charCache[player]
-    if cached and cached.Parent then
-        return cached
-    end
-    if not Entities then
-        return nil
-    end
-    for _, model in ipairs(Entities:GetChildren()) do
-        if model:IsA("Model") and attr(model, "Player") == player then
-            charCache[player] = model
-            return model
-        end
-    end
-    return nil
+local function isRig(model)
+    return typeof(model) == "Instance"
+        and model:IsA("Model")
+        and model:FindFirstChild("HumanoidRootPart") ~= nil
 end
 
-local function playerHealth(player)
-    local h = attr(player, "Health")
-    local m = attr(player, "MaxHealth")
-    if h then
-        return h, m or 100
+-- Aftermath replicates bodies as GUID-named rigs. Player.Character is nil for
+-- everyone, so the roster is discovered by scanning for rigs and classifying
+-- them, rather than by walking Players:GetPlayers().
+local Rigs = {
+    all = {},
+    players = {},
+    zombies = {},
+    localRig = nil,
+    lastScan = 0,
+    roots = {},
+}
+
+local RIG_ROOTS = {}
+
+local function candidateRoots()
+    if #RIG_ROOTS > 0 then
+        return RIG_ROOTS
     end
-    local char = characterOf(player)
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local roots = {}
+    if Entities then
+        roots[#roots + 1] = Entities
+    end
+    local chars = Workspace:FindFirstChild("Characters")
+    if chars then
+        roots[#roots + 1] = chars
+    end
+    local living = Workspace:FindFirstChild("Living")
+    if living then
+        roots[#roots + 1] = living
+    end
+    if #roots == 0 then
+        roots[#roots + 1] = Workspace
+    end
+    RIG_ROOTS = roots
+    return roots
+end
+
+-- A player rig carries gear; zombie rigs do not. This is the observable
+-- difference in a game where no attribute links Player -> Model.
+local function looksLikePlayerRig(model)
+    if model:FindFirstChild("Equipment") then
+        return true
+    end
+    for _, c in ipairs(model:GetChildren()) do
+        if c:IsA("Accessory") or c:IsA("Shirt") or c:IsA("Pants") then
+            return true
+        end
+        if c:IsA("MeshPart") and (c.Name == "UpperTorso" or c.Name == "LowerTorso") then
+            return true
+        end
+    end
+    return false
+end
+
+local function scanRigs(force)
+    local now = os.clock()
+    if not force and (now - Rigs.lastScan) < 0.5 then
+        return Rigs
+    end
+    Rigs.lastScan = now
+
+    local all, players, zombies = {}, {}, {}
+    for _, root in ipairs(candidateRoots()) do
+        for _, model in ipairs(root:GetChildren()) do
+            if isRig(model) then
+                all[#all + 1] = model
+                if looksLikePlayerRig(model) then
+                    players[#players + 1] = model
+                else
+                    zombies[#zombies + 1] = model
+                end
+            end
+        end
+    end
+
+    -- the closest rig to the camera is ours; never target or draw it
+    local cam = Workspace.CurrentCamera
+    local localRig, bestD
+    if cam then
+        local origin = cam.CFrame.Position
+        for _, m in ipairs(all) do
+            local r = rootOf(m)
+            if r then
+                local d = (r.Position - origin).Magnitude
+                if d < 12 and (not bestD or d < bestD) then
+                    localRig, bestD = m, d
+                end
+            end
+        end
+    end
+
+    local function strip(list)
+        if not localRig then
+            return list
+        end
+        local out = {}
+        for _, m in ipairs(list) do
+            if m ~= localRig then
+                out[#out + 1] = m
+            end
+        end
+        return out
+    end
+
+    Rigs.all = all
+    Rigs.players = strip(players)
+    Rigs.zombies = strip(zombies)
+    Rigs.localRig = localRig
+    return Rigs
+end
+
+local function rigHealth(model)
+    local h = attr(model, "Health")
+    if h then
+        return h, attr(model, "MaxHealth") or 100
+    end
+    local states = model:FindFirstChild("States")
+    if states then
+        local sh = attr(states, "Health")
+        if sh then
+            return sh, attr(states, "MaxHealth") or 100
+        end
+    end
+    local hum = model:FindFirstChildOfClass("Humanoid")
     if hum then
         return hum.Health, hum.MaxHealth
     end
-    return 0, 0
+    return 1, 1
 end
+--------------------------------------------------------------------------
+-- WORLD OBJECT SOURCES
+--------------------------------------------------------------------------
 
-local function isDead(player)
-    return attr(player, "Dead") == true
-end
-
-local function squadOf(player)
-    return attr(player, "SquadName")
-end
-
-local function isSquadmate(player)
-    local mine = squadOf(LP)
-    if not mine then
-        return false
-    end
-    return squadOf(player) == mine
-end
-
-local PLAYER_MODELS = {}
-
-local function refreshPlayerModels()
-    PLAYER_MODELS = {}
-    for _, player in ipairs(Players:GetPlayers()) do
-        local char = characterOf(player)
-        if char then
-            PLAYER_MODELS[char] = player
-        end
-    end
-end
-
-local function zombieModels()
-    if not Entities then
+local function lootModels()
+    if not ItemSpawns then
         return {}
     end
     local out = {}
-    for _, model in ipairs(Entities:GetChildren()) do
-        if isCharacterModel(model) and not PLAYER_MODELS[model] then
-            out[#out + 1] = model
-        end
-    end
-    return out
-end
-
-local function lootModels()
-    local out = {}
     local want = State.lootRarity
-    local sources = { ItemSpawns }
-    for _, folder in ipairs(sources) do
-        if folder then
-            for _, item in ipairs(folder:GetDescendants()) do
-                if item:IsA("Model") then
-                    local display = attr(item, "DisplayName")
-                    if display then
-                        local rarity = attr(item, "Rarity") or "Common"
-                        if want == "All" or rarity == want then
-                            out[#out + 1] = item
-                        end
-                    end
+    for _, item in ipairs(ItemSpawns:GetDescendants()) do
+        if item:IsA("Model") then
+            local display = attr(item, "DisplayName")
+            if display then
+                local rarity = attr(item, "Rarity") or "Common"
+                if want == "All" or rarity == want then
+                    out[#out + 1] = item
                 end
             end
         end
@@ -296,22 +396,11 @@ local function lootModels()
     return out
 end
 
-local function containerModels()
+local function namedWorkspaceModels(name, requireChild)
     local out = {}
     for _, model in ipairs(Workspace:GetChildren()) do
-        if model:IsA("Model") and model.Name == "Container" then
-            out[#out + 1] = model
-        end
-    end
-    return out
-end
-
-local function vehicleModels()
-    local out = {}
-    for _, model in ipairs(Workspace:GetChildren()) do
-        if model:IsA("Model") and model.Name == "WorldModel" then
-            local states = model:FindFirstChild("States")
-            if states then
+        if model:IsA("Model") and model.Name == name then
+            if not requireChild or model:FindFirstChild(requireChild) then
                 out[#out + 1] = model
             end
         end
@@ -319,17 +408,44 @@ local function vehicleModels()
     return out
 end
 
-local function folderChildren(folder)
-    if not folder then
-        return {}
-    end
-    return folder:GetChildren()
+local function containerModels()
+    return namedWorkspaceModels("Container")
 end
 
+local function vehicleModels()
+    return namedWorkspaceModels("WorldModel", "States")
+end
+
+local function corpseModels()
+    local out = {}
+    for _, model in ipairs(Workspace:GetChildren()) do
+        if model:IsA("Model") and model:FindFirstChild("PlayerGrave") then
+            out[#out + 1] = model
+        end
+    end
+    local ga = GameAssets and GameAssets:FindFirstChild("ragdolls")
+    if ga then
+        for _, model in ipairs(ga:GetChildren()) do
+            out[#out + 1] = model
+        end
+    end
+    return out
+end
+
+local function folderChildren(folder)
+    return folder and folder:GetChildren() or {}
+end
+
+--------------------------------------------------------------------------
+-- ESP
+--------------------------------------------------------------------------
+
 local esp
+local entitySpecs = {}
 
 local function setupESP()
     if type(ESP) ~= "table" or type(ESP.new) ~= "function" then
+        Log.err("esp", "library unavailable")
         return false
     end
 
@@ -337,58 +453,47 @@ local function setupESP()
     esp:profile("high")
 
     local c = esp.cfg
-    c.maxRange = 5000
-    c.espRange = 5000
+    c.maxRange, c.espRange = 5000, 5000
     c.target.on = false
     c.self.fov.on = false
     c.radar.on = false
     c.list.on = false
     c.threat.on = false
+    -- players are drawn through the NPC pipeline because Player.Character is
+    -- nil in this game; the built-in player roster can never resolve a body
+    c.on = false
 
-    c.npc.maxRange = 3000
-    c.npc.espRange = 3000
+    c.npc.maxRange, c.npc.espRange = 5000, 5000
+    c.npc.box.on = true
+    c.npc.name.on = true
+    c.npc.dist.on = true
+    c.npc.hp.on = true
 
     esp:setNPCSource(function()
-        if not State.zombieOn then
-            return {}
+        local rigs = scanRigs()
+        local out = {}
+        if State.playerOn then
+            for _, m in ipairs(rigs.players) do
+                out[#out + 1] = m
+            end
         end
-        return zombieModels()
+        if State.zombieOn then
+            for _, m in ipairs(rigs.zombies) do
+                out[#out + 1] = m
+            end
+        end
+        return out
     end)
 
     esp:setNPCLabel(function(model)
-        local health = attr(model, "Health")
-        if health then
-            return string.format("Infected [%d]", math.floor(health + 0.5))
-        end
-        return "Infected"
+        local hp = rigHealth(model)
+        local isPlayer = looksLikePlayerRig(model)
+        return string.format("%s [%d]", isPlayer and "Player" or "Zombie",
+            math.floor((hp or 0) + 0.5))
     end)
 
-    esp:flag("squad", function(s)
-        if s.plr and isSquadmate(s.plr) then
-            return { "SQUAD", Color3.fromRGB(120, 190, 255) }
-        end
-        return nil
-    end)
-
-    esp:flag("status", function(s)
-        if not s.plr then
-            return nil
-        end
-        local bits = {}
-        if attr(s.plr, "Bleeding") then
-            bits[#bits + 1] = "BLEED"
-        end
-        if attr(s.plr, "BrokenLeg") then
-            bits[#bits + 1] = "LEG"
-        end
-        if #bits > 0 then
-            return { table.concat(bits, " "), Color3.fromRGB(255, 130, 140) }
-        end
-        return nil
-    end)
-
-    local function entityGroup(id, getter, labeler, colour, priority)
-        return esp:addEnt(id, {
+    local function group(id, getter, labeler, colour, priority)
+        local spec = esp:addEnt(id, {
             get = getter,
             label = labeler,
             col = colour,
@@ -398,9 +503,11 @@ local function setupESP()
             max = 5000,
             priority = priority,
         })
+        entitySpecs[id] = spec
+        return spec
     end
 
-    local lootSpec = entityGroup("loot", function()
+    group("loot", function()
         return State.lootOn and lootModels() or {}
     end, function(obj)
         local name = attr(obj, "DisplayName") or obj.Name
@@ -411,107 +518,85 @@ local function setupESP()
         return name
     end, Color3.fromRGB(120, 255, 190), 2)
 
-    State.lootSpec = lootSpec
-
-    entityGroup("weapons", function()
+    group("weapons", function()
         return State.weaponOn and folderChildren(GroundWeapons) or {}
     end, function(obj)
         return attr(obj, "DisplayName") or obj.Name
     end, Color3.fromRGB(255, 220, 110), 2)
 
-    entityGroup("ammo", function()
+    group("ammo", function()
         return State.ammoOn and folderChildren(RefillAmmo) or {}
     end, function()
         return "Ammo"
     end, Color3.fromRGB(255, 180, 120), 2)
 
-    entityGroup("containers", function()
+    group("containers", function()
         return State.containerOn and containerModels() or {}
     end, function()
         return "Airdrop"
     end, Color3.fromRGB(255, 140, 90), 3)
 
-    entityGroup("vehicles", function()
+    group("vehicles", function()
         return State.vehicleOn and vehicleModels() or {}
     end, function(obj)
         local states = obj:FindFirstChild("States")
         local hp = states and attr(states, "Health")
-        if hp then
-            return string.format("Vehicle [%d]", math.floor(hp + 0.5))
-        end
-        return "Vehicle"
+        return hp and string.format("Vehicle [%d]", math.floor(hp + 0.5)) or "Vehicle"
     end, Color3.fromRGB(160, 200, 255), 3)
 
+    group("corpses", function()
+        return State.corpseOn and corpseModels() or {}
+    end, function()
+        return "Body"
+    end, Color3.fromRGB(200, 160, 160), 2)
+
     if POIFolder then
-        esp:addEnt("poi", {
-            get = function()
-                if not State.poiOn then
-                    return {}
+        group("poi", function()
+            if not State.poiOn then
+                return {}
+            end
+            local out = {}
+            for _, poi in ipairs(POIFolder:GetChildren()) do
+                local pos = attr(poi, "Position")
+                if typeof(pos) == "Vector3" then
+                    out[#out + 1] = pos
                 end
-                local out = {}
-                for _, poi in ipairs(POIFolder:GetChildren()) do
-                    local pos = attr(poi, "Position")
-                    if typeof(pos) == "Vector3" then
-                        out[#out + 1] = pos
-                    end
-                end
-                return out
-            end,
-            label = false,
-            col = Color3.fromRGB(200, 200, 210),
-            box = false,
-            name = false,
-            dist = true,
-            max = 0,
-            priority = 1,
-        })
+            end
+            return out
+        end, false, Color3.fromRGB(200, 200, 210), 1)
+        entitySpecs.poi.box = false
+        entitySpecs.poi.name = false
     end
 
-    esp:on(false)
     esp:start()
+    Log.info("esp", "started, entity groups=" .. tostring(#entitySpecs))
     return true
 end
 
-local aim
+--------------------------------------------------------------------------
+-- AIM
+--------------------------------------------------------------------------
 
-local function setupAim()
-    if type(EasyAim) ~= "table" or type(EasyAim.new) ~= "function" then
-        return false
-    end
+local aimLegit, aimRage
 
-    aim = EasyAim.new({
-        mode = "legit",
-        key = Enum.UserInputType.MouseButton2,
-        hitbox = { kind = "Head" },
-        fov = { on = true, radius = 130, col = Color3.fromRGB(150, 220, 160) },
-        legit = { smooth = 0.18, maxStep = 60 },
-        range = 1500,
-        deadCheck = true,
-    })
-
-    aim:setAdapter({
+local function buildAdapter()
+    return {
         targets = function()
+            local rigs = scanRigs()
             local out = {}
-            if State.aimTargetPlayers then
-                for _, player in ipairs(Players:GetPlayers()) do
-                    if player ~= LP then
-                        out[#out + 1] = player
-                    end
+            if State.aimPlayersOn then
+                for _, m in ipairs(rigs.players) do
+                    out[#out + 1] = m
                 end
             end
-            if State.aimTargetZombies then
-                for _, model in ipairs(zombieModels()) do
-                    out[#out + 1] = model
+            if State.aimZombiesOn then
+                for _, m in ipairs(rigs.zombies) do
+                    out[#out + 1] = m
                 end
             end
             return out
         end,
-        model = function(raw)
-            if typeof(raw) == "Instance" and raw:IsA("Player") then
-                return characterOf(raw)
-            end
-            return raw
-        end,
+        model = function(raw) return raw end,
         root = rootOf,
         part = function(model, kind)
             if kind == "Head" then
@@ -523,61 +608,70 @@ local function setupAim()
             end
             return nil
         end,
-        health = function(model, raw)
-            if typeof(raw) == "Instance" and raw:IsA("Player") then
-                return playerHealth(raw)
-            end
-            local h = attr(model, "Health")
-            if h then
-                return h, attr(model, "MaxHealth") or 100
-            end
-            local hum = model and model:FindFirstChildOfClass("Humanoid")
-            if hum then
-                return hum.Health, hum.MaxHealth
-            end
-            return 1, 1
-        end,
+        health = rigHealth,
         alive = function(model, raw, health, maxHealth)
-            if typeof(raw) == "Instance" and raw:IsA("Player") and isDead(raw) then
-                return false
-            end
             if maxHealth and maxHealth > 0 then
                 return health > 0
             end
             return model ~= nil
         end,
-        name = function(model, raw)
-            if typeof(raw) == "Instance" and raw:IsA("Player") then
-                return raw.DisplayName
-            end
-            return "Infected"
+        name = function(model)
+            return looksLikePlayerRig(model) and "Player" or "Zombie"
         end,
-        team = function(model, raw)
-            if typeof(raw) == "Instance" and raw:IsA("Player") then
-                return squadOf(raw)
-            end
-            return nil
+        team = function() return nil end,
+        ignore = function(model)
+            return model == Rigs.localRig
         end,
-        ignore = function(model, raw)
-            return raw == LP
-        end,
+    }
+end
+
+local function setupAim()
+    if type(EasyAim) ~= "table" or type(EasyAim.new) ~= "function" then
+        Log.err("aim", "library unavailable")
+        return false
+    end
+
+    aimLegit = EasyAim.new({
+        mode = "legit",
+        key = Enum.UserInputType.MouseButton2,
+        hitbox = { kind = "Head" },
+        fov = { on = true, radius = 130, col = Color3.fromRGB(150, 220, 160) },
+        legit = { smooth = 0.18, maxStep = 60 },
+        range = 1500,
     })
+    aimLegit:setAdapter(buildAdapter())
+    aimLegit:on(false)
+    aimLegit:start()
 
-    aim:setFilter(function(rec)
-        if typeof(rec.raw) == "Instance" and rec.raw:IsA("Player") then
-            if isSquadmate(rec.raw) then
-                return false
-            end
-        end
-        return true
-    end)
+    aimRage = EasyAim.new({
+        mode = "silent",
+        hold = false,
+        hitbox = { kind = "Head" },
+        fov = { on = false, radius = 0 },
+        select = "distance",
+        range = 3000,
+    })
+    aimRage:setAdapter(buildAdapter())
+    aimRage:on(false)
+    aimRage:start()
 
-    aim:on(false)
-    aim:start()
+    Log.info("aim", "legit + rage instances created")
     return true
 end
 
-Instance_.restore.lighting = {
+local okESP, espReady = pcall(setupESP)
+if not okESP then
+    Log.err("esp", espReady)
+    espReady = false
+end
+
+local okAim, aimReady = pcall(setupAim)
+if not okAim then
+    Log.err("aim", aimReady)
+    aimReady = false
+end
+
+Session.restore.lighting = {
     Brightness = Lighting.Brightness,
     ClockTime = Lighting.ClockTime,
     FogEnd = Lighting.FogEnd,
@@ -586,408 +680,323 @@ Instance_.restore.lighting = {
 }
 do
     local cam = Workspace.CurrentCamera
-    Instance_.restore.fov = cam and cam.FieldOfView or 70
+    Session.restore.fov = cam and cam.FieldOfView or 70
 end
-
-local okESP, espReady = pcall(setupESP)
-if not okESP then
-    warn("Aftermath: ESP setup failed: " .. tostring(espReady))
-    espReady = false
-end
-
-local okAim, aimReady = pcall(setupAim)
-if not okAim then
-    warn("Aftermath: aim setup failed: " .. tostring(aimReady))
-    aimReady = false
-end
+--------------------------------------------------------------------------
+-- UI
+--------------------------------------------------------------------------
 
 local function panel(name, build)
     local ok, err = pcall(build)
     if not ok then
-        warn("Aftermath: " .. name .. " panel failed: " .. tostring(err))
-        M:Notify({ title = "Aftermath", text = name .. " panel failed to build.", kind = "warn", duration = 8 })
+        Log.err("ui", name .. ": " .. tostring(err))
+        M:Notify({ title = "Aftermath", text = name .. " panel failed.", kind = "warn", duration = 8 })
     end
     return ok
 end
 
 local tabVisuals = M:Tab("Visuals")
-local tabPlayers = tabVisuals:SubTab("Players")
-local tabInfected = tabVisuals:SubTab("Infected")
-local tabWorld = tabVisuals:SubTab("World")
+local tabPlayersV = tabVisuals:SubTab("Players")
+local tabZombiesV = tabVisuals:SubTab("Zombies")
+local tabWorldV = tabVisuals:SubTab("World")
+
 local tabCombat = M:Tab("Combat")
-local tabPlayer = M:Tab("Player")
+local tabCombatPlayers = tabCombat:SubTab("Players")
+local tabCombatZombies = tabCombat:SubTab("Zombies")
+
+local tabPlayer = M:Tab("Self")
 local tabMisc = M:Tab("Misc")
 
-if espReady then
-  panel("Visuals", function()
-    local secMaster = tabPlayers:Section("Master")
-    secMaster:Toggle({
-        text = "Enable ESP",
-        flag = "esp.on",
-        default = false,
-        callback = function(v)
-            State.espOn = v
-            esp:on(v)
-        end,
-    })
-
-    local secPlayer = tabPlayers:Section("Players")
-    secPlayer:Toggle({
+local function espToggles(section, tree, label)
+    section:Toggle({
         text = "Boxes",
         default = true,
-        callback = function(v)
-            esp.cfg.box.on = v
-        end,
+        callback = function(v) tree.box.on = v end,
     })
-    secPlayer:Toggle({
+    section:Toggle({
         text = "Names",
         default = true,
-        callback = function(v)
-            esp.cfg.name.on = v
-        end,
+        callback = function(v) tree.name.on = v end,
     })
-    secPlayer:Toggle({
+    section:Toggle({
         text = "Distance",
         default = true,
-        callback = function(v)
-            esp.cfg.dist.on = v
-        end,
+        callback = function(v) tree.dist.on = v end,
     })
-    secPlayer:Toggle({
+    section:Toggle({
         text = "Health Bar",
         default = true,
-        callback = function(v)
-            esp.cfg.hp.on = v
-        end,
+        callback = function(v) tree.hp.on = v end,
     })
-    secPlayer:Toggle({
-        text = "Flags",
+    section:Toggle({
+        text = "Skeleton",
         default = false,
-        callback = function(v)
-            esp.cfg.flags.on = v
-        end,
+        callback = function(v) tree.bones.on = v end,
     })
-    secPlayer:Toggle({
+    section:Toggle({
+        text = "Head Dot",
+        default = false,
+        callback = function(v) tree.head.on = v end,
+    })
+    section:Toggle({
         text = "Tracers",
         default = false,
-        callback = function(v)
-            esp.cfg.tracer.on = v
-        end,
+        callback = function(v) tree.tracer.on = v end,
     })
-    secPlayer:Toggle({
+    section:Toggle({
+        text = "Off-screen Arrows",
+        default = false,
+        callback = function(v) tree.arrow.on = v end,
+    })
+    section:Toggle({
         text = "Chams",
         default = false,
-        callback = function(v)
-            esp.cfg.chams.on = v
-        end,
+        callback = function(v) tree.chams.on = v end,
     })
-    secPlayer:Dropdown({
+    section:Dropdown({
         text = "Box Style",
         options = { "corner", "box", "3d" },
         default = "corner",
-        callback = function(v)
-            esp.cfg.box.kind = v
-        end,
+        callback = function(v) tree.box.kind = v end,
     })
-    secPlayer:Colorpicker({
-        text = "Box Color",
-        default = Color3.fromRGB(190, 150, 255),
-        callback = function(v)
-            esp.cfg.box.col = v
-        end,
-    })
-    secPlayer:Slider({
-        text = "Range",
-        min = 100,
-        max = 5000,
-        step = 50,
-        default = 5000,
-        callback = function(v)
-            esp.cfg.espRange = v
-            esp.cfg.maxRange = v
-        end,
-    })
-
-    local secInfected = tabInfected:Section("Infected")
-    secInfected:Toggle({
-        text = "Enable",
-        default = false,
-        callback = function(v)
-            State.zombieOn = v
-            esp.cfg.npc.on = v
-        end,
-    })
-    secInfected:Toggle({
-        text = "Boxes",
-        default = true,
-        callback = function(v)
-            esp.cfg.npc.box.on = v
-        end,
-    })
-    secInfected:Toggle({
-        text = "Names",
-        default = false,
-        callback = function(v)
-            esp.cfg.npc.name.on = v
-        end,
-    })
-    secInfected:Toggle({
-        text = "Distance",
-        default = true,
-        callback = function(v)
-            esp.cfg.npc.dist.on = v
-        end,
-    })
-    secInfected:Toggle({
-        text = "Health Bar",
-        default = true,
-        callback = function(v)
-            esp.cfg.npc.hp.on = v
-        end,
-    })
-    secInfected:Colorpicker({
+    section:Colorpicker({
         text = "Color",
-        default = Color3.fromRGB(255, 135, 135),
-        callback = function(v)
-            esp.cfg.npc.box.col = v
-        end,
+        default = label == "Players" and Color3.fromRGB(190, 150, 255)
+            or Color3.fromRGB(255, 135, 135),
+        callback = function(v) tree.box.col = v end,
     })
-    secInfected:Slider({
+    section:Slider({
         text = "Range",
-        min = 100,
-        max = 3000,
-        step = 50,
-        default = 3000,
+        min = 100, max = 5000, step = 50, default = 5000,
         callback = function(v)
-            esp.cfg.npc.espRange = v
-            esp.cfg.npc.maxRange = v
+            tree.espRange = v
+            tree.maxRange = v
         end,
     })
-
-    local secLoot = tabWorld:Section("Loot")
-    secLoot:Toggle({
-        text = "Items",
-        default = false,
-        callback = function(v)
-            State.lootOn = v
-        end,
-    })
-    secLoot:Dropdown({
-        text = "Rarity Filter",
-        options = RARITY_ORDER,
-        default = "All",
-        callback = function(v)
-            State.lootRarity = v
-            if State.lootSpec then
-                State.lootSpec.col = RARITY_COLORS[v] or Color3.fromRGB(120, 255, 190)
-            end
-        end,
-    })
-    secLoot:Toggle({
-        text = "Ground Weapons",
-        default = false,
-        callback = function(v)
-            State.weaponOn = v
-        end,
-    })
-    secLoot:Toggle({
-        text = "Ammo Refills",
-        default = false,
-        callback = function(v)
-            State.ammoOn = v
-        end,
-    })
-
-    local secWorld = tabWorld:Section("World")
-    secWorld:Toggle({
-        text = "Airdrops",
-        default = false,
-        callback = function(v)
-            State.containerOn = v
-        end,
-    })
-    secWorld:Toggle({
-        text = "Vehicles",
-        default = false,
-        callback = function(v)
-            State.vehicleOn = v
-        end,
-    })
-    secWorld:Toggle({
-        text = "Points of Interest",
-        default = false,
-        callback = function(v)
-            State.poiOn = v
-        end,
-    })
-  end)
-else
-    tabPlayers:Section("ESP"):Label("EasyESP failed to load.")
 end
 
-if aimReady then
-  panel("Combat", function()
-    local secAim = tabCombat:Section("Aimbot")
-    secAim:Toggle({
-        text = "Enable",
+if espReady then
+    panel("Visuals/Players", function()
+        local s = tabPlayersV:Section("Players")
+        s:Toggle({
+            text = "Enable Player ESP",
+            default = true,
+            callback = function(v)
+                State.playerOn = v
+                Log.info("esp", "players=" .. tostring(v))
+            end,
+        })
+        espToggles(s, esp.cfg.npc, "Players")
+    end)
+
+    panel("Visuals/Zombies", function()
+        local s = tabZombiesV:Section("Zombies")
+        s:Toggle({
+            text = "Enable Zombie ESP",
+            default = false,
+            callback = function(v)
+                State.zombieOn = v
+                Log.info("esp", "zombies=" .. tostring(v))
+            end,
+        })
+        s:Label("Zombies share the ESP style set on the Players tab.")
+    end)
+
+    panel("Visuals/World", function()
+        local loot = tabWorldV:Section("Loot")
+        loot:Toggle({
+            text = "Items",
+            default = false,
+            callback = function(v) State.lootOn = v end,
+        })
+        loot:Dropdown({
+            text = "Rarity Filter",
+            options = RARITY_ORDER,
+            default = "All",
+            callback = function(v)
+                State.lootRarity = v
+                if entitySpecs.loot then
+                    entitySpecs.loot.col = RARITY_COLORS[v] or Color3.fromRGB(120, 255, 190)
+                end
+            end,
+        })
+        loot:Toggle({
+            text = "Ground Weapons",
+            default = false,
+            callback = function(v) State.weaponOn = v end,
+        })
+        loot:Toggle({
+            text = "Ammo Refills",
+            default = false,
+            callback = function(v) State.ammoOn = v end,
+        })
+
+        local world = tabWorldV:Section("World Objects")
+        world:Toggle({
+            text = "Airdrops / Containers",
+            default = false,
+            callback = function(v) State.containerOn = v end,
+        })
+        world:Toggle({
+            text = "Vehicles",
+            default = false,
+            callback = function(v) State.vehicleOn = v end,
+        })
+        world:Toggle({
+            text = "Bodies / Graves",
+            default = false,
+            callback = function(v) State.corpseOn = v end,
+        })
+        world:Toggle({
+            text = "Points of Interest",
+            default = false,
+            callback = function(v) State.poiOn = v end,
+        })
+
+        local tune = tabWorldV:Section("Tuning")
+        tune:Slider({
+            text = "Entity Refresh (frames)",
+            min = 1, max = 10, step = 1, default = 3,
+            callback = function(v) esp.cfg.perf.entityStep = v end,
+        })
+    end)
+else
+    tabPlayersV:Section("ESP"):Label("EasyESP failed to load.")
+end
+
+local function combatPanel(node, label, playersFlag)
+    local legit = node:Section("Legit")
+    legit:Toggle({
+        text = "Enable Legit Aim",
         default = false,
         callback = function(v)
-            State.aimOn = v
-            aim:on(v)
+            if playersFlag then State.aimPlayersOn = v else State.aimZombiesOn = v end
+            aimLegit:on(State.aimPlayersOn or State.aimZombiesOn)
+            Log.info("aim", "legit " .. label .. "=" .. tostring(v))
         end,
     })
-    secAim:Keybind({
+    legit:Keybind({
         text = "Aim Key",
         default = Enum.UserInputType.MouseButton2,
-        onChange = function(key)
-            if key then
-                aim.cfg.key = key
-            end
-        end,
+        onChange = function(k) if k then aimLegit.cfg.key = k end end,
     })
-    secAim:Dropdown({
-        text = "Mode",
-        options = { "legit", "rage", "silent" },
-        default = "legit",
-        callback = function(v)
-            aim.cfg.mode = v
-        end,
-    })
-    secAim:Dropdown({
+    legit:Dropdown({
         text = "Hitbox",
         options = { "Head", "Torso", "Root", "Nearest" },
         default = "Head",
-        callback = function(v)
-            aim.cfg.hitbox.kind = v
-        end,
+        callback = function(v) aimLegit.cfg.hitbox.kind = v end,
     })
-    secAim:Dropdown({
-        text = "Selection",
+    legit:Dropdown({
+        text = "Target Priority",
         options = { "fov", "distance", "health" },
         default = "fov",
-        callback = function(v)
-            aim.cfg.select = v
-        end,
+        callback = function(v) aimLegit.cfg.select = v end,
     })
-    secAim:Slider({
+    legit:Slider({
         text = "Smoothing",
-        min = 0.02,
-        max = 1,
-        step = 0.02,
-        decimals = 2,
-        default = 0.18,
-        callback = function(v)
-            aim.cfg.legit.smooth = v
-        end,
+        min = 0.02, max = 1, step = 0.02, decimals = 2, default = 0.18,
+        callback = function(v) aimLegit.cfg.legit.smooth = v end,
     })
-    secAim:Slider({
+    legit:Slider({
+        text = "Max Step (px)",
+        min = 5, max = 300, step = 5, default = 60,
+        callback = function(v) aimLegit.cfg.legit.maxStep = v end,
+    })
+    legit:Slider({
         text = "Range",
-        min = 50,
-        max = 3000,
-        step = 25,
-        default = 1500,
-        callback = function(v)
-            aim.cfg.range = v
-        end,
+        min = 50, max = 3000, step = 25, default = 1500,
+        callback = function(v) aimLegit.cfg.range = v end,
     })
-    secAim:Toggle({
+    legit:Slider({
+        text = "FOV Radius",
+        min = 10, max = 600, step = 5, default = 130,
+        callback = function(v) aimLegit.cfg.fov.radius = v end,
+    })
+    legit:Toggle({
+        text = "Show FOV Circle",
+        default = true,
+        callback = function(v) aimLegit.cfg.fov.on = v end,
+    })
+    legit:Toggle({
         text = "Sticky Target",
         default = false,
-        callback = function(v)
-            aim.cfg.sticky = v
-        end,
+        callback = function(v) aimLegit.cfg.sticky = v end,
     })
-    secAim:Toggle({
+    legit:Toggle({
         text = "Wall Check",
         default = false,
         callback = function(v)
-            aim.cfg.wallCheck = v
-            aim.cfg.vis.on = v
+            aimLegit.cfg.wallCheck = v
+            aimLegit.cfg.vis.on = v
         end,
+    })
+    legit:Toggle({
+        text = "Humanize",
+        default = false,
+        callback = function(v) aimLegit.cfg.humanize.on = v end,
     })
 
-    local secTargets = tabCombat:Section("Targets")
-    secTargets:Toggle({
-        text = "Target Players",
-        default = true,
-        callback = function(v)
-            State.aimTargetPlayers = v
-        end,
-    })
-    secTargets:Toggle({
-        text = "Target Infected",
-        default = true,
-        callback = function(v)
-            State.aimTargetZombies = v
-        end,
-    })
-
-    local secFov = tabCombat:Section("FOV")
-    secFov:Toggle({
-        text = "Show Circle",
-        default = true,
-        callback = function(v)
-            aim.cfg.fov.on = v
-        end,
-    })
-    secFov:Slider({
-        text = "Radius",
-        min = 10,
-        max = 600,
-        step = 5,
-        default = 130,
-        callback = function(v)
-            aim.cfg.fov.radius = v
-        end,
-    })
-    secFov:Colorpicker({
-        text = "Color",
-        default = Color3.fromRGB(150, 220, 160),
-        callback = function(v)
-            aim.cfg.fov.col = v
-        end,
-    })
-    secFov:Toggle({
-        text = "Follow Mouse",
+    local rage = node:Section("Rage / Silent")
+    rage:Toggle({
+        text = "Enable Silent Aim",
         default = false,
         callback = function(v)
-            aim.cfg.fov.follow = v
+            if playersFlag then State.aimPlayersOn = v else State.aimZombiesOn = v end
+            aimRage:on(State.aimPlayersOn or State.aimZombiesOn)
+            Log.info("aim", "rage " .. label .. "=" .. tostring(v))
         end,
     })
-
-    local secPredict = tabCombat:Section("Prediction")
-    secPredict:Toggle({
-        text = "Enable",
+    rage:Label("Silent aim resolves a hit point without moving your camera.")
+    rage:Dropdown({
+        text = "Hitbox",
+        options = { "Head", "Torso", "Root", "Nearest" },
+        default = "Head",
+        callback = function(v) aimRage.cfg.hitbox.kind = v end,
+    })
+    rage:Dropdown({
+        text = "Target Priority",
+        options = { "distance", "fov", "health" },
+        default = "distance",
+        callback = function(v) aimRage.cfg.select = v end,
+    })
+    rage:Slider({
+        text = "Range",
+        min = 50, max = 5000, step = 25, default = 3000,
+        callback = function(v) aimRage.cfg.range = v end,
+    })
+    rage:Toggle({
+        text = "Wall Check",
         default = false,
         callback = function(v)
-            aim.cfg.predict.on = v
+            aimRage.cfg.wallCheck = v
+            aimRage.cfg.vis.on = v
         end,
     })
-    secPredict:Slider({
-        text = "Factor",
-        min = 0,
-        max = 1,
-        step = 0.005,
-        decimals = 3,
-        default = 0.165,
-        callback = function(v)
-            aim.cfg.predict.factor = v
-        end,
+    rage:Toggle({
+        text = "Prediction",
+        default = false,
+        callback = function(v) aimRage.cfg.predict.on = v end,
     })
-    secPredict:Slider({
-        text = "Projectile Speed",
-        min = 0,
-        max = 3000,
-        step = 25,
-        default = 0,
-        callback = function(v)
-            aim.cfg.predict.speed = v
-        end,
+    rage:Slider({
+        text = "Prediction Factor",
+        min = 0, max = 1, step = 0.005, decimals = 3, default = 0.165,
+        callback = function(v) aimRage.cfg.predict.factor = v end,
     })
-  end)
-else
-    tabCombat:Section("Aimbot"):Label("EasyAim failed to load.")
 end
+
+if aimReady then
+    panel("Combat/Players", function()
+        combatPanel(tabCombatPlayers, "players", true)
+    end)
+    panel("Combat/Zombies", function()
+        combatPanel(tabCombatZombies, "zombies", false)
+    end)
+else
+    tabCombatPlayers:Section("Aim"):Label("EasyAim failed to load.")
+end
+--------------------------------------------------------------------------
+-- SELF
+--------------------------------------------------------------------------
 
 local secStats = tabPlayer:Section("Survival")
 local labelHealth = secStats:Label("Health: -")
@@ -999,15 +1008,211 @@ local labelStatus = secStats:Label("Status: -")
 local secSquad = tabPlayer:Section("Squad")
 local labelSquad = secSquad:Label("Squad: none")
 
+local secVisual = tabPlayer:Section("Visual")
+secVisual:Toggle({
+    text = "No Fog",
+    default = false,
+    callback = function(v)
+        State.noFog = v
+        if not v and Session.restore.lighting then
+            Lighting.FogEnd = Session.restore.lighting.FogEnd
+        end
+    end,
+})
+secVisual:Toggle({
+    text = "Fullbright",
+    default = false,
+    callback = function(v)
+        State.fullbright = v
+        if not v and Session.restore.lighting then
+            local l = Session.restore.lighting
+            Lighting.Brightness = l.Brightness
+            Lighting.ClockTime = l.ClockTime
+            Lighting.Ambient = l.Ambient
+            Lighting.OutdoorAmbient = l.OutdoorAmbient
+        end
+    end,
+})
+secVisual:Toggle({
+    text = "Override FOV",
+    default = false,
+    callback = function(v)
+        State.fovOverride = v
+        if not v then
+            local cam = Workspace.CurrentCamera
+            if cam and Session.restore.fov then
+                cam.FieldOfView = Session.restore.fov
+            end
+        end
+    end,
+})
+secVisual:Slider({
+    text = "Field of View",
+    min = 40, max = 120, step = 1, default = 70,
+    callback = function(v)
+        State.fovValue = v
+        State.fovOverride = true
+    end,
+})
+
+--------------------------------------------------------------------------
+-- MISC + DIAGNOSTICS
+--------------------------------------------------------------------------
+
 local secServer = tabMisc:Section("Server")
 local labelServer = secServer:Label("Server: -")
 local labelPlayers = secServer:Label("Players: -")
+local labelRigs = secServer:Label("Rigs: -")
+
+local secDiag = tabMisc:Section("Diagnostics")
+local labelDiag = secDiag:Label("Press 'Copy Verbose Log' then send it over.")
+
+local function buildReport()
+    local rigs = scanRigs(true)
+    local out = {}
+    local function add(s) out[#out + 1] = s end
+
+    add("===== AFTERMATH VERBOSE REPORT =====")
+    add("version      : " .. VERSION)
+    add("time         : " .. os.date("%Y-%m-%d %H:%M:%S"))
+    add("executor     : " .. tostring(identifyexecutor and select(1, identifyexecutor()) or "?"))
+    add("placeId      : " .. tostring(game.PlaceId))
+    add("jobId        : " .. tostring(game.JobId))
+    add("espReady     : " .. tostring(espReady))
+    add("aimReady     : " .. tostring(aimReady))
+    add("")
+
+    add("--- ROSTER ---")
+    add("Players service  : " .. #Players:GetPlayers())
+    add("rigs total       : " .. #rigs.all)
+    add("rigs -> players  : " .. #rigs.players)
+    add("rigs -> zombies  : " .. #rigs.zombies)
+    add("local rig        : " .. tostring(rigs.localRig and rigs.localRig.Name or "NOT FOUND"))
+    add("LP.Character     : " .. tostring(LP.Character and LP.Character.Name or "nil"))
+    add("scan roots       : ")
+    for _, r in ipairs(candidateRoots()) do
+        add("    " .. r:GetFullName() .. "  (" .. #r:GetChildren() .. " children)")
+    end
+    add("")
+
+    add("--- RIG SAMPLES (first 5) ---")
+    for i = 1, math.min(5, #rigs.all) do
+        local m = rigs.all[i]
+        local hp, maxhp = rigHealth(m)
+        local root = rootOf(m)
+        add(string.format("[%d] %s", i, m.Name))
+        add("     parent   : " .. tostring(m.Parent and m.Parent:GetFullName()))
+        add("     class    : " .. m.ClassName)
+        add("     root     : " .. tostring(root and root.Name or "NONE"))
+        add(string.format("     health   : %s / %s", tostring(hp), tostring(maxhp)))
+        add("     playerish: " .. tostring(looksLikePlayerRig(m)))
+        local kids = {}
+        for _, c in ipairs(m:GetChildren()) do
+            kids[#kids + 1] = c.ClassName .. ":" .. c.Name
+            if #kids >= 10 then break end
+        end
+        add("     children : " .. table.concat(kids, ", "))
+    end
+    add("")
+
+    add("--- ESP STATE ---")
+    if esp then
+        add("cfg.on          : " .. tostring(esp.cfg.on))
+        add("npc.on          : " .. tostring(esp.cfg.npc.on))
+        add("npc.box.on      : " .. tostring(esp.cfg.npc.box.on))
+        add("npc.espRange    : " .. tostring(esp.cfg.npc.espRange))
+        local ok, stats = pcall(function() return esp:statsGet() end)
+        if ok and type(stats) == "table" then
+            add(string.format("drawn=%s pool=%s roster=%s ents=%s fps=%s",
+                tostring(stats.drawn), tostring(stats.pool), tostring(stats.roster),
+                tostring(stats.ents), tostring(stats.fps)))
+        end
+        local srcOk, srcCount = pcall(function()
+            return #(esp._npcSrc and esp._npcSrc() or {})
+        end)
+        add("npc source returns : " .. (srcOk and tostring(srcCount) or "ERROR"))
+    else
+        add("esp is nil")
+    end
+    add("")
+
+    add("--- AIM STATE ---")
+    for name, inst in pairs({ legit = aimLegit, rage = aimRage }) do
+        if inst then
+            add(name .. ".on      : " .. tostring(inst.cfg.on))
+            add(name .. ".mode    : " .. tostring(inst.cfg.mode))
+            add(name .. ".running : " .. tostring(inst.running))
+            local ok, roster = pcall(function() return #inst:build() end)
+            add(name .. ".roster  : " .. (ok and tostring(roster) or "ERROR"))
+        end
+    end
+    add("")
+
+    add("--- WORLD SOURCES ---")
+    add("loot        : " .. #lootModels())
+    add("weapons     : " .. #folderChildren(GroundWeapons))
+    add("ammo        : " .. #folderChildren(RefillAmmo))
+    add("containers  : " .. #containerModels())
+    add("vehicles    : " .. #vehicleModels())
+    add("corpses     : " .. #corpseModels())
+    add("")
+
+    add("--- TOGGLES ---")
+    for k, v in pairs(State) do
+        add(string.format("  %-16s = %s", k, tostring(v)))
+    end
+    add("")
+
+    add("--- LOG (" .. #Log.lines .. " lines) ---")
+    for _, line in ipairs(Log.lines) do
+        add(line)
+    end
+
+    return table.concat(out, "\n")
+end
+
+secDiag:Button({
+    text = "Copy Verbose Log",
+    callback = function()
+        local ok, report = pcall(buildReport)
+        if not ok then
+            report = "report build failed: " .. tostring(report)
+        end
+        if setclipboard then
+            pcall(setclipboard, report)
+        end
+        if writefile then
+            pcall(writefile, "AftermathReport.txt", report)
+        end
+        labelDiag.Text = string.format("Copied %d chars @ %s", #report, os.date("%H:%M:%S"))
+        M:Notify({ title = "Aftermath", text = "Verbose log copied to clipboard.", kind = "ok" })
+    end,
+})
+
+secDiag:Toggle({
+    text = "Stream Log to Console",
+    default = false,
+    callback = function(v)
+        Log.verbose = v
+        Log.info("log", "verbose streaming " .. tostring(v))
+    end,
+})
+
+secDiag:Button({
+    text = "Rescan Rigs",
+    callback = function()
+        local rigs = scanRigs(true)
+        local msg = string.format("rigs=%d players=%d zombies=%d",
+            #rigs.all, #rigs.players, #rigs.zombies)
+        Log.info("scan", msg)
+        labelDiag.Text = msg
+        M:Notify({ title = "Aftermath", text = msg, kind = "info" })
+    end,
+})
 
 secServer:Button({
     text = "Unload Script",
-    callback = function()
-        Instance_.unload()
-    end,
+    callback = function() Session.unload() end,
 })
 
 secServer:Button({
@@ -1020,143 +1225,70 @@ secServer:Button({
     end,
 })
 
-local secVisual = tabMisc:Section("Visual")
-secVisual:Toggle({
-    text = "No Fog",
-    default = false,
-    callback = function(v)
-        State.noFog = v
-        if v then
-            Lighting.FogEnd = 1e6
-        end
-    end,
-})
-secVisual:Toggle({
-    text = "Fullbright",
-    default = false,
-    callback = function(v)
-        State.fullbright = v
-    end,
-})
-secVisual:Toggle({
-    text = "Override FOV",
-    default = false,
-    callback = function(v)
-        State.fovOverride = v
-        if not v then
-            local camera = Workspace.CurrentCamera
-            if camera and Instance_.restore.fov then
-                camera.FieldOfView = Instance_.restore.fov
-            end
-        end
-    end,
-})
-
-secVisual:Slider({
-    text = "Field of View",
-    min = 40,
-    max = 120,
-    step = 1,
-    default = 70,
-    callback = function(v)
-        State.fovValue = v
-        State.fovOverride = true
-    end,
-})
-
 if GunModifiers then
     local secGun = tabMisc:Section("Gun Modifiers")
-    secGun:Label("Client-side multipliers, server may reject.")
-
-    local function bindMultiplier(label, eventName, default, minV, maxV)
+    secGun:Label("Client-side; the server may reject these.")
+    local function bind(label, eventName, default, minV, maxV)
         local event = GunModifiers:FindFirstChild(eventName)
-        if not event then
-            return
-        end
+        if not event then return end
         secGun:Slider({
             text = label,
-            min = minV,
-            max = maxV,
-            step = 0.05,
-            decimals = 2,
-            default = default,
+            min = minV, max = maxV, step = 0.05, decimals = 2, default = default,
             callback = function(v)
-                pcall(function()
-                    event:Fire(v)
-                end)
+                pcall(function() event:Fire(v) end)
+                Log.info("gun", eventName .. "=" .. v)
             end,
         })
     end
-
-    bindMultiplier("Recoil", "SetGunRecoilMultiplier", 1, 0, 2)
-    bindMultiplier("Accuracy (Hipfire)", "SetGunAccuracyHipfireMultiplier", 1, 0, 2)
-    bindMultiplier("Accuracy (Aimed)", "SetGunAccuracyAimedMultiplier", 1, 0, 2)
-    bindMultiplier("Aim Speed", "SetGunAimSpeedMultiplier", 1, 0, 3)
-    bindMultiplier("Reload Speed", "SetGunReloadSpeedMultiplier", 1, 0, 3)
+    bind("Recoil", "SetGunRecoilMultiplier", 1, 0, 2)
+    bind("Accuracy (Hipfire)", "SetGunAccuracyHipfireMultiplier", 1, 0, 2)
+    bind("Accuracy (Aimed)", "SetGunAccuracyAimedMultiplier", 1, 0, 2)
+    bind("Aim Speed", "SetGunAimSpeedMultiplier", 1, 0, 3)
+    bind("Reload Speed", "SetGunReloadSpeedMultiplier", 1, 0, 3)
 end
 
 M:ConfigTab()
 
-M:Every("aftermath:refresh", 1, function()
-    refreshPlayerModels()
+--------------------------------------------------------------------------
+-- RUNTIME
+--------------------------------------------------------------------------
 
-    local health, maxHealth = playerHealth(LP)
-    if maxHealth and maxHealth > 0 then
-        labelHealth.Text = string.format("Health: %d / %d", math.floor(health + 0.5), math.floor(maxHealth + 0.5))
-    else
-        labelHealth.Text = "Health: -"
-    end
+M:Every("aftermath:refresh", 1, function()
+    local rigs = scanRigs(true)
+
+    local hp = attr(LP, "Health")
+    local maxHp = attr(LP, "MaxHealth") or 100
+    labelHealth.Text = hp and string.format("Health: %d / %d", math.floor(hp + 0.5), maxHp) or "Health: -"
 
     local hunger = attr(LP, "Hunger")
-    local maxHunger = attr(LP, "MaxHunger") or 100
-    labelHunger.Text = hunger and string.format("Hunger: %d / %d", math.floor(hunger + 0.5), maxHunger) or "Hunger: -"
+    labelHunger.Text = hunger and string.format("Hunger: %d / %d",
+        math.floor(hunger + 0.5), attr(LP, "MaxHunger") or 100) or "Hunger: -"
 
     local thirst = attr(LP, "Thirst")
-    local maxThirst = attr(LP, "MaxThirst") or 100
-    labelThirst.Text = thirst and string.format("Thirst: %d / %d", math.floor(thirst + 0.5), maxThirst) or "Thirst: -"
+    labelThirst.Text = thirst and string.format("Thirst: %d / %d",
+        math.floor(thirst + 0.5), attr(LP, "MaxThirst") or 100) or "Thirst: -"
 
     local stamina = attr(LP, "Stamina")
-    local maxStamina = attr(LP, "MaxStamina") or 100
-    labelStamina.Text = stamina and string.format("Stamina: %d / %d", math.floor(stamina + 0.5), maxStamina) or "Stamina: -"
+    labelStamina.Text = stamina and string.format("Stamina: %d / %d",
+        math.floor(stamina + 0.5), attr(LP, "MaxStamina") or 100) or "Stamina: -"
 
     local status = {}
-    if attr(LP, "Bleeding") then
-        status[#status + 1] = "Bleeding"
-    end
-    if attr(LP, "BrokenLeg") then
-        status[#status + 1] = "Broken Leg"
-    end
+    if attr(LP, "Bleeding") then status[#status + 1] = "Bleeding" end
+    if attr(LP, "BrokenLeg") then status[#status + 1] = "Broken Leg" end
     local infection = attr(LP, "Infection")
     if infection and infection > 0 then
         status[#status + 1] = string.format("Infection %d", math.floor(infection + 0.5))
     end
-    local toxicity = attr(LP, "Toxicity")
-    if toxicity and toxicity > 0 then
-        status[#status + 1] = string.format("Toxicity %d", math.floor(toxicity + 0.5))
-    end
     labelStatus.Text = #status > 0 and ("Status: " .. table.concat(status, ", ")) or "Status: healthy"
 
-    local squad = squadOf(LP)
-    if squad then
-        local mates = 0
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LP and squadOf(player) == squad then
-                mates = mates + 1
-            end
-        end
-        labelSquad.Text = string.format("Squad: %s (%d mates)", squad, mates)
-    else
-        labelSquad.Text = "Squad: none"
-    end
+    local squad = attr(LP, "SquadName")
+    labelSquad.Text = squad and ("Squad: " .. squad) or "Squad: none"
 
     local serverName = GameAssets and GameAssets:FindFirstChild("server_name")
-    local regionName = GameAssets and GameAssets:FindFirstChild("server_region_name")
-    labelServer.Text = string.format(
-        "Server: %s (%s)",
-        serverName and serverName.Value or "?",
-        regionName and regionName.Value or "?"
-    )
+    labelServer.Text = "Server: " .. (serverName and serverName.Value or "?")
     labelPlayers.Text = string.format("Players: %d / %d", #Players:GetPlayers(), Players.MaxPlayers)
+    labelRigs.Text = string.format("Rigs: %d (players %d / zombies %d)",
+        #rigs.all, #rigs.players, #rigs.zombies)
 end, 5)
 
 M:Schedule("aftermath:visual", function()
@@ -1170,79 +1302,56 @@ M:Schedule("aftermath:visual", function()
         Lighting.FogEnd = 1e6
     end
     if State.fovOverride then
-        local camera = Workspace.CurrentCamera
-        if camera and math.abs(camera.FieldOfView - State.fovValue) > 0.5 then
-            camera.FieldOfView = State.fovValue
+        local cam = Workspace.CurrentCamera
+        if cam and math.abs(cam.FieldOfView - State.fovValue) > 0.5 then
+            cam.FieldOfView = State.fovValue
         end
     end
 end, 10, -5)
 
-Instance_.track(Players.PlayerRemoving:Connect(function(player)
-    charCache[player] = nil
-end))
-
-function Instance_.unload()
-    for _, conn in ipairs(Instance_.conns) do
+function Session.unload()
+    for _, conn in ipairs(Session.conns) do
+        pcall(function() conn:Disconnect() end)
+    end
+    Session.conns = {}
+    for _, inst in ipairs({ aimLegit, aimRage, esp }) do
+        if inst then
+            pcall(function() inst:destroy() end)
+        end
+    end
+    local l = Session.restore.lighting
+    if l then
         pcall(function()
-            conn:Disconnect()
+            Lighting.Brightness = l.Brightness
+            Lighting.ClockTime = l.ClockTime
+            Lighting.FogEnd = l.FogEnd
+            Lighting.Ambient = l.Ambient
+            Lighting.OutdoorAmbient = l.OutdoorAmbient
         end)
     end
-    Instance_.conns = {}
-
-    if aim then
-        pcall(function()
-            aim:destroy()
-        end)
-    end
-    if esp then
-        pcall(function()
-            esp:destroy()
-        end)
-    end
-
-    local light = Instance_.restore.lighting
-    if light then
-        pcall(function()
-            Lighting.Brightness = light.Brightness
-            Lighting.ClockTime = light.ClockTime
-            Lighting.FogEnd = light.FogEnd
-            Lighting.Ambient = light.Ambient
-            Lighting.OutdoorAmbient = light.OutdoorAmbient
-        end)
-    end
-
     pcall(function()
         local cam = Workspace.CurrentCamera
-        if cam and Instance_.restore.fov then
-            cam.FieldOfView = Instance_.restore.fov
+        if cam and Session.restore.fov then
+            cam.FieldOfView = Session.restore.fov
         end
     end)
-
-    pcall(function()
-        M:Close()
-    end)
-
-    if GENV[SLOT] == Instance_ then
+    pcall(function() M:Close() end)
+    if GENV[SLOT] == Session then
         GENV[SLOT] = nil
     end
 end
 
-refreshPlayerModels()
+scanRigs(true)
+Log.info("boot", string.format("ready: rigs=%d players=%d zombies=%d",
+    #Rigs.all, #Rigs.players, #Rigs.zombies))
 
-notify(
-    "Aftermath v" .. VERSION,
-    (hadPrevious and "Reloaded (previous instance unloaded). " or "Loaded. ")
-        .. "Press Right Shift to toggle the menu.",
-    7
-)
+notify("Aftermath v" .. VERSION,
+    (hadPrevious and "Reloaded. " or "Loaded. ") .. "Right Shift toggles the menu.", 7)
 
 M:Notify({
     title = hadPrevious and "Aftermath reloaded" or "Aftermath",
-    text = string.format(
-        "ESP %s | Aim %s",
-        espReady and "ready" or "unavailable",
-        aimReady and "ready" or "unavailable"
-    ),
+    text = string.format("ESP %s | Aim %s | rigs %d",
+        espReady and "ok" or "off", aimReady and "ok" or "off", #Rigs.all),
     kind = (espReady and aimReady) and "ok" or "warn",
     duration = 6,
 })
