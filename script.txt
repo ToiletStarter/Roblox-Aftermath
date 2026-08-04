@@ -153,6 +153,7 @@ local State = {
     noFog = false,
     fullbright = false,
     fovValue = 70,
+    fovOverride = false,
 }
 
 local RARITY_COLORS = {
@@ -1037,6 +1038,20 @@ secVisual:Toggle({
         State.fullbright = v
     end,
 })
+secVisual:Toggle({
+    text = "Override FOV",
+    default = false,
+    callback = function(v)
+        State.fovOverride = v
+        if not v then
+            local camera = Workspace.CurrentCamera
+            if camera and Instance_.restore.fov then
+                camera.FieldOfView = Instance_.restore.fov
+            end
+        end
+    end,
+})
+
 secVisual:Slider({
     text = "Field of View",
     min = 40,
@@ -1045,6 +1060,7 @@ secVisual:Slider({
     default = 70,
     callback = function(v)
         State.fovValue = v
+        State.fovOverride = true
     end,
 })
 
@@ -1153,9 +1169,11 @@ M:Schedule("aftermath:visual", function()
     if State.noFog then
         Lighting.FogEnd = 1e6
     end
-    local camera = Workspace.CurrentCamera
-    if camera and math.abs(camera.FieldOfView - State.fovValue) > 0.5 then
-        camera.FieldOfView = State.fovValue
+    if State.fovOverride then
+        local camera = Workspace.CurrentCamera
+        if camera and math.abs(camera.FieldOfView - State.fovValue) > 0.5 then
+            camera.FieldOfView = State.fovValue
+        end
     end
 end, 10, -5)
 
