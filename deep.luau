@@ -13,7 +13,6 @@ local ents = ga and ga:FindFirstChild("Entities")
 say("Entities children: " .. (ents and #ents:GetChildren() or -1))
 say("NOTE: 33 players but only 15 entity models -> player bodies are NOT all here")
 
--- Where do character-like models with a HumanoidRootPart actually live?
 say("")
 say("--- WHERE ARE CHARACTER RIGS IN THE WHOLE WORKSPACE? ---")
 local buckets = {}
@@ -31,7 +30,6 @@ for k, v in pairs(buckets) do
     say(string.format("  %-60s %d rigs", k:sub(1, 60), v))
 end
 
--- Does the local player have a body anywhere? Find it by proximity to camera.
 say("")
 say("--- LOCATE LOCAL BODY (nearest rig to camera) ---")
 local cam = Workspace.CurrentCamera
@@ -61,7 +59,6 @@ if cam then
     end
 end
 
--- Is there a client-side registry module holding the mapping?
 say("")
 say("--- SEARCH LOADED MODULES FOR A PLAYER REGISTRY ---")
 if getloadedmodules then
@@ -78,7 +75,6 @@ else
     say("  getloadedmodules unavailable")
 end
 
--- Search the GC for a table mapping Player -> Model
 say("")
 say("--- GC SCAN: table mapping Player -> Model ---")
 local scanner = (filtergc and "filtergc") or (getgc and "getgc") or nil

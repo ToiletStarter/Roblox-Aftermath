@@ -23,7 +23,6 @@ local kids = ents:GetChildren()
 say("Entities children: " .. #kids)
 say("Players in server: " .. #Players:GetPlayers())
 
--- 1. Does LP.Character exist and where does it live?
 say("")
 say("--- LOCAL PLAYER ---")
 say("LP.Character: " .. tostring(LP.Character and LP.Character:GetFullName() or "nil"))
@@ -32,7 +31,6 @@ if LP.Character then
     say("LP.Character in Entities: " .. tostring(LP.Character:IsDescendantOf(ents)))
 end
 
--- 2. Union of attribute keys across entity models
 say("")
 say("--- ENTITY ATTRIBUTE KEYS (count across models) ---")
 local keys = {}
@@ -53,7 +51,6 @@ for k, info in pairs(keys) do
 end
 if not anyKey then say("  (no attributes on any entity model)") end
 
--- 3. How do we link a Player to a model? Try every plausible strategy.
 say("")
 say("--- PLAYER -> MODEL LINK STRATEGIES ---")
 
@@ -99,7 +96,6 @@ countMatches("ObjectValue child -> Player", function(p)
     return nil
 end)
 
--- 4. What is actually inside an entity model?
 say("")
 say("--- SAMPLE ENTITY STRUCTURE (first 3) ---")
 for i = 1, math.min(3, #kids) do
@@ -121,7 +117,6 @@ for i = 1, math.min(3, #kids) do
     end
 end
 
--- 5. Which models would my current isCharacterModel() accept?
 say("")
 say("--- CLASSIFICATION ---")
 local charLike, withHum, withAnim = 0, 0, 0
@@ -138,7 +133,6 @@ say("  models with child named 'Humanoid': " .. withHum)
 say("  models with AnimationController:    " .. withAnim)
 say("  character-like total:               " .. charLike)
 
--- 6. Root part resolution
 say("")
 say("--- ROOT PART RESOLUTION ---")
 local rootOk, rootFail = 0, 0

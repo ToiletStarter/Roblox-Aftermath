@@ -10,10 +10,6 @@ local PLACE_ID = 112237800564065
 local VERSION = "2.0.0"
 local BASE = "https://raw.githubusercontent.com/ToiletStarter/CantStopMakingReposForThis/refs/heads/main/"
 
---------------------------------------------------------------------------
--- LOGGING
---------------------------------------------------------------------------
-
 local Log = {
     lines = {},
     max = 600,
@@ -46,10 +42,6 @@ function Log.probe(section, fn)
     end
     return ok, result
 end
-
---------------------------------------------------------------------------
--- INSTANCE GUARD
---------------------------------------------------------------------------
 
 local GENV = (getgenv and getgenv()) or shared or _G
 local SLOT = "__AFTERMATH_INSTANCE"
@@ -86,10 +78,6 @@ function Session.track(conn)
 end
 
 GENV[SLOT] = Session
-
---------------------------------------------------------------------------
--- LIBRARY LOADING
---------------------------------------------------------------------------
 
 local function notify(title, text, duration)
     pcall(function()
@@ -152,10 +140,6 @@ if game.PlaceId ~= PLACE_ID then
     Log.warn("boot", "place id mismatch: " .. tostring(game.PlaceId))
 end
 
---------------------------------------------------------------------------
--- WORLD REFERENCES
---------------------------------------------------------------------------
-
 local GameAssets = Workspace:FindFirstChild("game_assets")
 local Entities = GameAssets and GameAssets:FindFirstChild("Entities")
 local ItemSpawns = GameAssets and GameAssets:FindFirstChild("item_spawns")
@@ -172,10 +156,6 @@ Log.info("world", "game_assets=" .. tostring(GameAssets ~= nil)
     .. " Entities=" .. tostring(Entities ~= nil)
     .. " item_spawns=" .. tostring(ItemSpawns ~= nil)
     .. " GroundWeapons=" .. tostring(GroundWeapons ~= nil))
-
---------------------------------------------------------------------------
--- STATE
---------------------------------------------------------------------------
 
 local State = {
     espOn = false,
@@ -214,10 +194,6 @@ local RARITY_COLORS = {
 
 local RARITY_ORDER = { "All", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Unique" }
 
---------------------------------------------------------------------------
--- CHARACTER RESOLUTION
---------------------------------------------------------------------------
-
 local function attr(inst, name)
     if typeof(inst) ~= "Instance" then
         return nil
@@ -243,9 +219,6 @@ local function isRig(model)
         and model:FindFirstChild("HumanoidRootPart") ~= nil
 end
 
--- Aftermath replicates bodies as GUID-named rigs. Player.Character is nil for
--- everyone, so the roster is discovered by scanning for rigs and classifying
--- them, rather than by walking Players:GetPlayers().
 local Rigs = {
     all = {},
     players = {},
@@ -280,8 +253,6 @@ local function candidateRoots()
     return roots
 end
 
--- A player rig carries gear; zombie rigs do not. This is the observable
--- difference in a game where no attribute links Player -> Model.
 local function looksLikePlayerRig(model)
     if model:FindFirstChild("Equipment") then
         return true
@@ -318,7 +289,6 @@ local function scanRigs(force)
         end
     end
 
-    -- the closest rig to the camera is ours; never target or draw it
     local cam = Workspace.CurrentCamera
     local localRig, bestD
     if cam then
@@ -372,9 +342,6 @@ local function rigHealth(model)
     end
     return 1, 1
 end
---------------------------------------------------------------------------
--- WORLD OBJECT SOURCES
---------------------------------------------------------------------------
 
 local function lootModels()
     if not ItemSpawns then
@@ -436,10 +403,6 @@ local function folderChildren(folder)
     return folder and folder:GetChildren() or {}
 end
 
---------------------------------------------------------------------------
--- ESP
---------------------------------------------------------------------------
-
 local esp
 local entitySpecs = {}
 
@@ -459,8 +422,7 @@ local function setupESP()
     c.radar.on = false
     c.list.on = false
     c.threat.on = false
-    -- players are drawn through the NPC pipeline because Player.Character is
-    -- nil in this game; the built-in player roster can never resolve a body
+
     c.on = false
 
     c.npc.maxRange, c.npc.espRange = 5000, 5000
@@ -573,10 +535,6 @@ local function setupESP()
     return true
 end
 
---------------------------------------------------------------------------
--- AIM
---------------------------------------------------------------------------
-
 local aimLegit, aimRage
 
 local function buildAdapter()
@@ -682,9 +640,6 @@ do
     local cam = Workspace.CurrentCamera
     Session.restore.fov = cam and cam.FieldOfView or 70
 end
---------------------------------------------------------------------------
--- UI
---------------------------------------------------------------------------
 
 local function panel(name, build)
     local ok, err = pcall(build)
@@ -994,9 +949,6 @@ if aimReady then
 else
     tabCombatPlayers:Section("Aim"):Label("EasyAim failed to load.")
 end
---------------------------------------------------------------------------
--- SELF
---------------------------------------------------------------------------
 
 local secStats = tabPlayer:Section("Survival")
 local labelHealth = secStats:Label("Health: -")
@@ -1054,10 +1006,6 @@ secVisual:Slider({
         State.fovOverride = true
     end,
 })
-
---------------------------------------------------------------------------
--- MISC + DIAGNOSTICS
---------------------------------------------------------------------------
 
 local secServer = tabMisc:Section("Server")
 local labelServer = secServer:Label("Server: -")
@@ -1248,10 +1196,6 @@ if GunModifiers then
 end
 
 M:ConfigTab()
-
---------------------------------------------------------------------------
--- RUNTIME
---------------------------------------------------------------------------
 
 M:Every("aftermath:refresh", 1, function()
     local rigs = scanRigs(true)
