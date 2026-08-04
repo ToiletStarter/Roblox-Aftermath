@@ -1,0 +1,1101 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+
+local LP = Players.LocalPlayer
+
+local PLACE_ID = 112237800564065
+local VERSION = "1.0.0"
+local BASE = "https://raw.githubusercontent.com/ToiletStarter/CantStopMakingReposForThis/refs/heads/main/"
+
+local function loadLib(path)
+    if type(loadstring) ~= "function" then
+        return nil, "loadstring unavailable"
+    end
+    local okHttp, source = pcall(function()
+        return game:HttpGet(BASE .. path)
+    end)
+    if not okHttp or type(source) ~= "string" then
+        return nil, "HttpGet failed"
+    end
+    local okCompile, chunk = pcall(loadstring, source)
+    if not okCompile or type(chunk) ~= "function" then
+        return nil, "compile failed"
+    end
+    local okRun, value = pcall(chunk)
+    if not okRun or type(value) ~= "table" then
+        return nil, "module returned " .. typeof(value)
+    end
+    return value
+end
+
+local function notify(title, text, duration)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = duration or 6,
+        })
+    end)
+end
+
+local UI, uiErr = loadLib("easyui/EasyUiTesting.luau")
+if type(UI) ~= "table" or type(UI.new) ~= "function" then
+    notify("Aftermath", "EasyUI failed: " .. tostring(uiErr), 10)
+    return
+end
+
+local ESP = loadLib("easyesp/EasyESP.luau")
+local EasyAim = loadLib("easyaim/EasyAim.luau")
+
+local M = UI.new({
+    title = "Aftermath | v" .. VERSION,
+    toggleKey = Enum.KeyCode.RightShift,
+    cursor = true,
+    keybindHud = true,
+    watermark = true,
+    loader = true,
+    loadTime = 1.6,
+    width = 660,
+    height = 500,
+    accent = Color3.fromRGB(150, 220, 160),
+})
+
+if Workspace.PlaceId and Workspace.PlaceId ~= PLACE_ID then
+    notify("Aftermath", "Different place id, some features may not resolve.", 8)
+end
+
+local GameAssets = Workspace:FindFirstChild("game_assets")
+local Entities = GameAssets and GameAssets:FindFirstChild("Entities")
+local ItemSpawns = GameAssets and GameAssets:FindFirstChild("item_spawns")
+local GroundWeapons = Workspace:FindFirstChild("GroundWeapons")
+local RefillAmmo = Workspace:FindFirstChild("RefillAmmo")
+
+local GameConfig = ReplicatedStorage:FindFirstChild("GameConfig")
+local MapData = GameConfig and GameConfig:FindFirstChild("MapData")
+local POIFolder = MapData and MapData:FindFirstChild("POI")
+
+local GunSystem = ReplicatedStorage:FindFirstChild("GunSystem")
+local GunEvent = GunSystem and GunSystem:FindFirstChild("Event")
+local GunModifiers = GunEvent and GunEvent:FindFirstChild("GunModifiers")
+
+local State = {
+    espOn = false,
+    playerBox = true,
+    playerName = true,
+    playerDist = true,
+    playerHp = true,
+    playerTracer = false,
+    playerChams = false,
+
+    zombieOn = false,
+    zombieBox = true,
+    zombieName = false,
+    zombieDist = true,
+
+    lootOn = false,
+    lootRarity = "All",
+    lootRange = 400,
+    weaponOn = false,
+    ammoOn = false,
+    containerOn = false,
+    vehicleOn = false,
+    poiOn = false,
+
+    aimOn = false,
+    aimTargetZombies = true,
+    aimTargetPlayers = true,
+
+    infoHunger = true,
+    infoThirst = true,
+    infoStamina = true,
+    infoSquad = true,
+
+    noFog = false,
+    fullbright = false,
+    fovValue = 70,
+}
+
+local RARITY_COLORS = {
+    Common = Color3.fromRGB(190, 195, 205),
+    Uncommon = Color3.fromRGB(125, 235, 165),
+    Rare = Color3.fromRGB(110, 180, 255),
+    Epic = Color3.fromRGB(200, 140, 255),
+    Legendary = Color3.fromRGB(255, 195, 90),
+    Unique = Color3.fromRGB(255, 130, 150),
+}
+
+local RARITY_ORDER = { "All", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Unique" }
+
+local function attr(inst, name)
+    if typeof(inst) ~= "Instance" then
+        return nil
+    end
+    local ok, value = pcall(inst.GetAttribute, inst, name)
+    if ok then
+        return value
+    end
+    return nil
+end
+
+local function isCharacterModel(model)
+    if typeof(model) ~= "Instance" or not model:IsA("Model") then
+        return false
+    end
+    return model:FindFirstChild("Humanoid") ~= nil or model:FindFirstChildOfClass("AnimationController") ~= nil
+end
+
+local function rootOf(model)
+    if typeof(model) ~= "Instance" then
+        return nil
+    end
+    return model:FindFirstChild("HumanoidRootPart")
+        or model:FindFirstChild("UpperTorso")
+        or model:FindFirstChild("Torso")
+        or model.PrimaryPart
+        or model:FindFirstChildWhichIsA("BasePart")
+end
+
+local charCache = {}
+
+local function characterOf(player)
+    if player.Character and player.Character.Parent then
+        charCache[player] = player.Character
+        return player.Character
+    end
+    local cached = charCache[player]
+    if cached and cached.Parent then
+        return cached
+    end
+    if not Entities then
+        return nil
+    end
+    for _, model in ipairs(Entities:GetChildren()) do
+        if model:IsA("Model") and attr(model, "Player") == player then
+            charCache[player] = model
+            return model
+        end
+    end
+    return nil
+end
+
+local function playerHealth(player)
+    local h = attr(player, "Health")
+    local m = attr(player, "MaxHealth")
+    if h then
+        return h, m or 100
+    end
+    local char = characterOf(player)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        return hum.Health, hum.MaxHealth
+    end
+    return 0, 0
+end
+
+local function isDead(player)
+    return attr(player, "Dead") == true
+end
+
+local function squadOf(player)
+    return attr(player, "SquadName")
+end
+
+local function isSquadmate(player)
+    local mine = squadOf(LP)
+    if not mine then
+        return false
+    end
+    return squadOf(player) == mine
+end
+
+local PLAYER_MODELS = {}
+
+local function refreshPlayerModels()
+    PLAYER_MODELS = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        local char = characterOf(player)
+        if char then
+            PLAYER_MODELS[char] = player
+        end
+    end
+end
+
+local function zombieModels()
+    if not Entities then
+        return {}
+    end
+    local out = {}
+    for _, model in ipairs(Entities:GetChildren()) do
+        if isCharacterModel(model) and not PLAYER_MODELS[model] then
+            out[#out + 1] = model
+        end
+    end
+    return out
+end
+
+local function lootModels()
+    local out = {}
+    local want = State.lootRarity
+    local sources = { ItemSpawns }
+    for _, folder in ipairs(sources) do
+        if folder then
+            for _, item in ipairs(folder:GetDescendants()) do
+                if item:IsA("Model") then
+                    local display = attr(item, "DisplayName")
+                    if display then
+                        local rarity = attr(item, "Rarity") or "Common"
+                        if want == "All" or rarity == want then
+                            out[#out + 1] = item
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+
+local function containerModels()
+    local out = {}
+    for _, model in ipairs(Workspace:GetChildren()) do
+        if model:IsA("Model") and model.Name == "Container" then
+            out[#out + 1] = model
+        end
+    end
+    return out
+end
+
+local function vehicleModels()
+    local out = {}
+    for _, model in ipairs(Workspace:GetChildren()) do
+        if model:IsA("Model") and model.Name == "WorldModel" then
+            local states = model:FindFirstChild("States")
+            if states then
+                out[#out + 1] = model
+            end
+        end
+    end
+    return out
+end
+
+local function folderChildren(folder)
+    if not folder then
+        return {}
+    end
+    return folder:GetChildren()
+end
+
+local esp
+
+local function setupESP()
+    if type(ESP) ~= "table" or type(ESP.new) ~= "function" then
+        return false
+    end
+
+    esp = ESP.new()
+    esp:profile("high")
+
+    local c = esp.cfg
+    c.maxRange = 5000
+    c.espRange = 5000
+    c.target.on = false
+    c.self.fov.on = false
+    c.radar.on = false
+    c.list.on = false
+    c.threat.on = false
+
+    c.npc.maxRange = 3000
+    c.npc.espRange = 3000
+
+    esp:setNPCSource(function()
+        if not State.zombieOn then
+            return {}
+        end
+        return zombieModels()
+    end)
+
+    esp:setNPCLabel(function(model)
+        local health = attr(model, "Health")
+        if health then
+            return string.format("Infected [%d]", math.floor(health + 0.5))
+        end
+        return "Infected"
+    end)
+
+    esp:flag("squad", function(s)
+        if s.plr and isSquadmate(s.plr) then
+            return { "SQUAD", Color3.fromRGB(120, 190, 255) }
+        end
+        return nil
+    end)
+
+    esp:flag("status", function(s)
+        if not s.plr then
+            return nil
+        end
+        local bits = {}
+        if attr(s.plr, "Bleeding") then
+            bits[#bits + 1] = "BLEED"
+        end
+        if attr(s.plr, "BrokenLeg") then
+            bits[#bits + 1] = "LEG"
+        end
+        if #bits > 0 then
+            return { table.concat(bits, " "), Color3.fromRGB(255, 130, 140) }
+        end
+        return nil
+    end)
+
+    local function entityGroup(id, getter, labeler, colour, priority)
+        return esp:addEnt(id, {
+            get = getter,
+            label = labeler,
+            col = colour,
+            box = true,
+            name = true,
+            dist = true,
+            max = 5000,
+            priority = priority,
+        })
+    end
+
+    local lootSpec = entityGroup("loot", function()
+        return State.lootOn and lootModels() or {}
+    end, function(obj)
+        local name = attr(obj, "DisplayName") or obj.Name
+        local rarity = attr(obj, "Rarity")
+        if rarity and rarity ~= "Common" then
+            return name .. " [" .. rarity .. "]"
+        end
+        return name
+    end, Color3.fromRGB(120, 255, 190), 2)
+
+    State.lootSpec = lootSpec
+
+    entityGroup("weapons", function()
+        return State.weaponOn and folderChildren(GroundWeapons) or {}
+    end, function(obj)
+        return attr(obj, "DisplayName") or obj.Name
+    end, Color3.fromRGB(255, 220, 110), 2)
+
+    entityGroup("ammo", function()
+        return State.ammoOn and folderChildren(RefillAmmo) or {}
+    end, function()
+        return "Ammo"
+    end, Color3.fromRGB(255, 180, 120), 2)
+
+    entityGroup("containers", function()
+        return State.containerOn and containerModels() or {}
+    end, function()
+        return "Airdrop"
+    end, Color3.fromRGB(255, 140, 90), 3)
+
+    entityGroup("vehicles", function()
+        return State.vehicleOn and vehicleModels() or {}
+    end, function(obj)
+        local states = obj:FindFirstChild("States")
+        local hp = states and attr(states, "Health")
+        if hp then
+            return string.format("Vehicle [%d]", math.floor(hp + 0.5))
+        end
+        return "Vehicle"
+    end, Color3.fromRGB(160, 200, 255), 3)
+
+    if POIFolder then
+        esp:addEnt("poi", {
+            get = function()
+                if not State.poiOn then
+                    return {}
+                end
+                local out = {}
+                for _, poi in ipairs(POIFolder:GetChildren()) do
+                    local pos = attr(poi, "Position")
+                    if typeof(pos) == "Vector3" then
+                        out[#out + 1] = pos
+                    end
+                end
+                return out
+            end,
+            label = false,
+            col = Color3.fromRGB(200, 200, 210),
+            box = false,
+            name = false,
+            dist = true,
+            max = 0,
+            priority = 1,
+        })
+    end
+
+    esp:on(false)
+    esp:start()
+    return true
+end
+
+local aim
+
+local function setupAim()
+    if type(EasyAim) ~= "table" or type(EasyAim.new) ~= "function" then
+        return false
+    end
+
+    aim = EasyAim.new({
+        mode = "legit",
+        key = Enum.UserInputType.MouseButton2,
+        hitbox = { kind = "Head" },
+        fov = { on = true, radius = 130, col = Color3.fromRGB(150, 220, 160) },
+        legit = { smooth = 0.18, maxStep = 60 },
+        range = 1500,
+        deadCheck = true,
+    })
+
+    aim:setAdapter({
+        targets = function()
+            local out = {}
+            if State.aimTargetPlayers then
+                for _, player in ipairs(Players:GetPlayers()) do
+                    if player ~= LP then
+                        out[#out + 1] = player
+                    end
+                end
+            end
+            if State.aimTargetZombies then
+                for _, model in ipairs(zombieModels()) do
+                    out[#out + 1] = model
+                end
+            end
+            return out
+        end,
+        model = function(raw)
+            if typeof(raw) == "Instance" and raw:IsA("Player") then
+                return characterOf(raw)
+            end
+            return raw
+        end,
+        root = rootOf,
+        part = function(model, kind)
+            if kind == "Head" then
+                return model:FindFirstChild("Head")
+            elseif kind == "Torso" then
+                return model:FindFirstChild("UpperTorso")
+                    or model:FindFirstChild("Torso")
+                    or model:FindFirstChild("HumanoidRootPart")
+            end
+            return nil
+        end,
+        health = function(model, raw)
+            if typeof(raw) == "Instance" and raw:IsA("Player") then
+                return playerHealth(raw)
+            end
+            local h = attr(model, "Health")
+            if h then
+                return h, attr(model, "MaxHealth") or 100
+            end
+            local hum = model and model:FindFirstChildOfClass("Humanoid")
+            if hum then
+                return hum.Health, hum.MaxHealth
+            end
+            return 1, 1
+        end,
+        alive = function(model, raw, health, maxHealth)
+            if typeof(raw) == "Instance" and raw:IsA("Player") and isDead(raw) then
+                return false
+            end
+            if maxHealth and maxHealth > 0 then
+                return health > 0
+            end
+            return model ~= nil
+        end,
+        name = function(model, raw)
+            if typeof(raw) == "Instance" and raw:IsA("Player") then
+                return raw.DisplayName
+            end
+            return "Infected"
+        end,
+        team = function(model, raw)
+            if typeof(raw) == "Instance" and raw:IsA("Player") then
+                return squadOf(raw)
+            end
+            return nil
+        end,
+        ignore = function(model, raw)
+            return raw == LP
+        end,
+    })
+
+    aim:setFilter(function(rec)
+        if typeof(rec.raw) == "Instance" and rec.raw:IsA("Player") then
+            if isSquadmate(rec.raw) then
+                return false
+            end
+        end
+        return true
+    end)
+
+    aim:on(false)
+    aim:start()
+    return true
+end
+
+local espReady = setupESP()
+local aimReady = setupAim()
+
+local tabVisuals = M:Tab("Visuals")
+local tabPlayers = tabVisuals:SubTab("Players")
+local tabInfected = tabVisuals:SubTab("Infected")
+local tabWorld = tabVisuals:SubTab("World")
+local tabCombat = M:Tab("Combat")
+local tabPlayer = M:Tab("Player")
+local tabMisc = M:Tab("Misc")
+
+if espReady then
+    local secMaster = tabPlayers:Section("Master")
+    secMaster:Toggle({
+        text = "Enable ESP",
+        flag = "esp.on",
+        default = false,
+        callback = function(v)
+            State.espOn = v
+            esp:on(v)
+        end,
+    })
+
+    local secPlayer = tabPlayers:Section("Players")
+    secPlayer:Toggle({
+        text = "Boxes",
+        default = true,
+        callback = function(v)
+            esp.cfg.box.on = v
+        end,
+    })
+    secPlayer:Toggle({
+        text = "Names",
+        default = true,
+        callback = function(v)
+            esp.cfg.name.on = v
+        end,
+    })
+    secPlayer:Toggle({
+        text = "Distance",
+        default = true,
+        callback = function(v)
+            esp.cfg.dist.on = v
+        end,
+    })
+    secPlayer:Toggle({
+        text = "Health Bar",
+        default = true,
+        callback = function(v)
+            esp.cfg.hp.on = v
+        end,
+    })
+    secPlayer:Toggle({
+        text = "Flags",
+        default = false,
+        callback = function(v)
+            esp.cfg.flags.on = v
+        end,
+    })
+    secPlayer:Toggle({
+        text = "Tracers",
+        default = false,
+        callback = function(v)
+            esp.cfg.tracer.on = v
+        end,
+    })
+    secPlayer:Toggle({
+        text = "Chams",
+        default = false,
+        callback = function(v)
+            esp.cfg.chams.on = v
+        end,
+    })
+    secPlayer:Dropdown({
+        text = "Box Style",
+        options = { "corner", "box", "3d" },
+        default = "corner",
+        callback = function(v)
+            esp.cfg.box.kind = v
+        end,
+    })
+    secPlayer:Colorpicker({
+        text = "Box Color",
+        default = Color3.fromRGB(190, 150, 255),
+        callback = function(v)
+            esp.cfg.box.col = v
+        end,
+    })
+    secPlayer:Slider({
+        text = "Range",
+        min = 100,
+        max = 5000,
+        step = 50,
+        default = 5000,
+        callback = function(v)
+            esp.cfg.espRange = v
+            esp.cfg.maxRange = v
+        end,
+    })
+
+    local secInfected = tabInfected:Section("Infected")
+    secInfected:Toggle({
+        text = "Enable",
+        default = false,
+        callback = function(v)
+            State.zombieOn = v
+            esp.cfg.npc.on = v
+        end,
+    })
+    secInfected:Toggle({
+        text = "Boxes",
+        default = true,
+        callback = function(v)
+            esp.cfg.npc.box.on = v
+        end,
+    })
+    secInfected:Toggle({
+        text = "Names",
+        default = false,
+        callback = function(v)
+            esp.cfg.npc.name.on = v
+        end,
+    })
+    secInfected:Toggle({
+        text = "Distance",
+        default = true,
+        callback = function(v)
+            esp.cfg.npc.dist.on = v
+        end,
+    })
+    secInfected:Toggle({
+        text = "Health Bar",
+        default = true,
+        callback = function(v)
+            esp.cfg.npc.hp.on = v
+        end,
+    })
+    secInfected:Colorpicker({
+        text = "Color",
+        default = Color3.fromRGB(255, 135, 135),
+        callback = function(v)
+            esp.cfg.npc.box.col = v
+        end,
+    })
+    secInfected:Slider({
+        text = "Range",
+        min = 100,
+        max = 3000,
+        step = 50,
+        default = 3000,
+        callback = function(v)
+            esp.cfg.npc.espRange = v
+            esp.cfg.npc.maxRange = v
+        end,
+    })
+
+    local secLoot = tabWorld:Section("Loot")
+    secLoot:Toggle({
+        text = "Items",
+        default = false,
+        callback = function(v)
+            State.lootOn = v
+        end,
+    })
+    secLoot:Dropdown({
+        text = "Rarity Filter",
+        options = RARITY_ORDER,
+        default = "All",
+        callback = function(v)
+            State.lootRarity = v
+            if State.lootSpec then
+                State.lootSpec.col = RARITY_COLORS[v] or Color3.fromRGB(120, 255, 190)
+            end
+        end,
+    })
+    secLoot:Toggle({
+        text = "Ground Weapons",
+        default = false,
+        callback = function(v)
+            State.weaponOn = v
+        end,
+    })
+    secLoot:Toggle({
+        text = "Ammo Refills",
+        default = false,
+        callback = function(v)
+            State.ammoOn = v
+        end,
+    })
+
+    local secWorld = tabWorld:Section("World")
+    secWorld:Toggle({
+        text = "Airdrops",
+        default = false,
+        callback = function(v)
+            State.containerOn = v
+        end,
+    })
+    secWorld:Toggle({
+        text = "Vehicles",
+        default = false,
+        callback = function(v)
+            State.vehicleOn = v
+        end,
+    })
+    secWorld:Toggle({
+        text = "Points of Interest",
+        default = false,
+        callback = function(v)
+            State.poiOn = v
+        end,
+    })
+else
+    tabPlayers:Section("ESP"):Label("EasyESP failed to load.")
+end
+
+if aimReady then
+    local secAim = tabCombat:Section("Aimbot")
+    secAim:Toggle({
+        text = "Enable",
+        default = false,
+        callback = function(v)
+            State.aimOn = v
+            aim:on(v)
+        end,
+    })
+    secAim:Keybind({
+        text = "Aim Key",
+        default = Enum.UserInputType.MouseButton2,
+        onChange = function(key)
+            if key then
+                aim.cfg.key = key
+            end
+        end,
+    })
+    secAim:Dropdown({
+        text = "Mode",
+        options = { "legit", "rage", "silent" },
+        default = "legit",
+        callback = function(v)
+            aim.cfg.mode = v
+        end,
+    })
+    secAim:Dropdown({
+        text = "Hitbox",
+        options = { "Head", "Torso", "Root", "Nearest" },
+        default = "Head",
+        callback = function(v)
+            aim.cfg.hitbox.kind = v
+        end,
+    })
+    secAim:Dropdown({
+        text = "Selection",
+        options = { "fov", "distance", "health" },
+        default = "fov",
+        callback = function(v)
+            aim.cfg.select = v
+        end,
+    })
+    secAim:Slider({
+        text = "Smoothing",
+        min = 0.02,
+        max = 1,
+        step = 0.02,
+        decimals = 2,
+        default = 0.18,
+        callback = function(v)
+            aim.cfg.legit.smooth = v
+        end,
+    })
+    secAim:Slider({
+        text = "Range",
+        min = 50,
+        max = 3000,
+        step = 25,
+        default = 1500,
+        callback = function(v)
+            aim.cfg.range = v
+        end,
+    })
+    secAim:Toggle({
+        text = "Sticky Target",
+        default = false,
+        callback = function(v)
+            aim.cfg.sticky = v
+        end,
+    })
+    secAim:Toggle({
+        text = "Wall Check",
+        default = false,
+        callback = function(v)
+            aim.cfg.wallCheck = v
+            aim.cfg.vis.on = v
+        end,
+    })
+
+    local secTargets = tabCombat:Section("Targets")
+    secTargets:Toggle({
+        text = "Target Players",
+        default = true,
+        callback = function(v)
+            State.aimTargetPlayers = v
+        end,
+    })
+    secTargets:Toggle({
+        text = "Target Infected",
+        default = true,
+        callback = function(v)
+            State.aimTargetZombies = v
+        end,
+    })
+
+    local secFov = tabCombat:Section("FOV")
+    secFov:Toggle({
+        text = "Show Circle",
+        default = true,
+        callback = function(v)
+            aim.cfg.fov.on = v
+        end,
+    })
+    secFov:Slider({
+        text = "Radius",
+        min = 10,
+        max = 600,
+        step = 5,
+        default = 130,
+        callback = function(v)
+            aim.cfg.fov.radius = v
+        end,
+    })
+    secFov:Colorpicker({
+        text = "Color",
+        default = Color3.fromRGB(150, 220, 160),
+        callback = function(v)
+            aim.cfg.fov.col = v
+        end,
+    })
+    secFov:Toggle({
+        text = "Follow Mouse",
+        default = false,
+        callback = function(v)
+            aim.cfg.fov.follow = v
+        end,
+    })
+
+    local secPredict = tabCombat:Section("Prediction")
+    secPredict:Toggle({
+        text = "Enable",
+        default = false,
+        callback = function(v)
+            aim.cfg.predict.on = v
+        end,
+    })
+    secPredict:Slider({
+        text = "Factor",
+        min = 0,
+        max = 1,
+        step = 0.005,
+        decimals = 3,
+        default = 0.165,
+        callback = function(v)
+            aim.cfg.predict.factor = v
+        end,
+    })
+    secPredict:Slider({
+        text = "Projectile Speed",
+        min = 0,
+        max = 3000,
+        step = 25,
+        default = 0,
+        callback = function(v)
+            aim.cfg.predict.speed = v
+        end,
+    })
+else
+    tabCombat:Section("Aimbot"):Label("EasyAim failed to load.")
+end
+
+local secStats = tabPlayer:Section("Survival")
+local labelHealth = secStats:Label("Health: -")
+local labelHunger = secStats:Label("Hunger: -")
+local labelThirst = secStats:Label("Thirst: -")
+local labelStamina = secStats:Label("Stamina: -")
+local labelStatus = secStats:Label("Status: -")
+
+local secSquad = tabPlayer:Section("Squad")
+local labelSquad = secSquad:Label("Squad: none")
+
+local secServer = tabMisc:Section("Server")
+local labelServer = secServer:Label("Server: -")
+local labelPlayers = secServer:Label("Players: -")
+
+secServer:Button({
+    text = "Copy Job ID",
+    callback = function()
+        if setclipboard then
+            setclipboard(game.JobId)
+            M:Notify({ title = "Aftermath", text = "Job ID copied.", kind = "ok" })
+        end
+    end,
+})
+
+local secVisual = tabMisc:Section("Visual")
+secVisual:Toggle({
+    text = "No Fog",
+    default = false,
+    callback = function(v)
+        State.noFog = v
+        if v then
+            Lighting.FogEnd = 1e6
+        end
+    end,
+})
+secVisual:Toggle({
+    text = "Fullbright",
+    default = false,
+    callback = function(v)
+        State.fullbright = v
+    end,
+})
+secVisual:Slider({
+    text = "Field of View",
+    min = 40,
+    max = 120,
+    step = 1,
+    default = 70,
+    callback = function(v)
+        State.fovValue = v
+    end,
+})
+
+if GunModifiers then
+    local secGun = tabMisc:Section("Gun Modifiers")
+    secGun:Label("Client-side multipliers, server may reject.")
+
+    local function bindMultiplier(label, eventName, default, minV, maxV)
+        local event = GunModifiers:FindFirstChild(eventName)
+        if not event then
+            return
+        end
+        secGun:Slider({
+            text = label,
+            min = minV,
+            max = maxV,
+            step = 0.05,
+            decimals = 2,
+            default = default,
+            callback = function(v)
+                pcall(function()
+                    event:Fire(v)
+                end)
+            end,
+        })
+    end
+
+    bindMultiplier("Recoil", "SetGunRecoilMultiplier", 1, 0, 2)
+    bindMultiplier("Accuracy (Hipfire)", "SetGunAccuracyHipfireMultiplier", 1, 0, 2)
+    bindMultiplier("Accuracy (Aimed)", "SetGunAccuracyAimedMultiplier", 1, 0, 2)
+    bindMultiplier("Aim Speed", "SetGunAimSpeedMultiplier", 1, 0, 3)
+    bindMultiplier("Reload Speed", "SetGunReloadSpeedMultiplier", 1, 0, 3)
+end
+
+M:ConfigTab()
+
+M:Every("aftermath:refresh", 1, function()
+    refreshPlayerModels()
+
+    local health, maxHealth = playerHealth(LP)
+    if maxHealth and maxHealth > 0 then
+        labelHealth.Text = string.format("Health: %d / %d", math.floor(health + 0.5), math.floor(maxHealth + 0.5))
+    else
+        labelHealth.Text = "Health: -"
+    end
+
+    local hunger = attr(LP, "Hunger")
+    local maxHunger = attr(LP, "MaxHunger") or 100
+    labelHunger.Text = hunger and string.format("Hunger: %d / %d", math.floor(hunger + 0.5), maxHunger) or "Hunger: -"
+
+    local thirst = attr(LP, "Thirst")
+    local maxThirst = attr(LP, "MaxThirst") or 100
+    labelThirst.Text = thirst and string.format("Thirst: %d / %d", math.floor(thirst + 0.5), maxThirst) or "Thirst: -"
+
+    local stamina = attr(LP, "Stamina")
+    local maxStamina = attr(LP, "MaxStamina") or 100
+    labelStamina.Text = stamina and string.format("Stamina: %d / %d", math.floor(stamina + 0.5), maxStamina) or "Stamina: -"
+
+    local status = {}
+    if attr(LP, "Bleeding") then
+        status[#status + 1] = "Bleeding"
+    end
+    if attr(LP, "BrokenLeg") then
+        status[#status + 1] = "Broken Leg"
+    end
+    local infection = attr(LP, "Infection")
+    if infection and infection > 0 then
+        status[#status + 1] = string.format("Infection %d", math.floor(infection + 0.5))
+    end
+    local toxicity = attr(LP, "Toxicity")
+    if toxicity and toxicity > 0 then
+        status[#status + 1] = string.format("Toxicity %d", math.floor(toxicity + 0.5))
+    end
+    labelStatus.Text = #status > 0 and ("Status: " .. table.concat(status, ", ")) or "Status: healthy"
+
+    local squad = squadOf(LP)
+    if squad then
+        local mates = 0
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LP and squadOf(player) == squad then
+                mates = mates + 1
+            end
+        end
+        labelSquad.Text = string.format("Squad: %s (%d mates)", squad, mates)
+    else
+        labelSquad.Text = "Squad: none"
+    end
+
+    local serverName = GameAssets and GameAssets:FindFirstChild("server_name")
+    local regionName = GameAssets and GameAssets:FindFirstChild("server_region_name")
+    labelServer.Text = string.format(
+        "Server: %s (%s)",
+        serverName and serverName.Value or "?",
+        regionName and regionName.Value or "?"
+    )
+    labelPlayers.Text = string.format("Players: %d / %d", #Players:GetPlayers(), Players.MaxPlayers)
+end, 5)
+
+M:Schedule("aftermath:visual", function()
+    if State.fullbright then
+        Lighting.Brightness = 3
+        Lighting.ClockTime = 14
+        Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+        Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+    end
+    if State.noFog then
+        Lighting.FogEnd = 1e6
+    end
+    local camera = Workspace.CurrentCamera
+    if camera and math.abs(camera.FieldOfView - State.fovValue) > 0.5 then
+        camera.FieldOfView = State.fovValue
+    end
+end, 10, -5)
+
+Players.PlayerRemoving:Connect(function(player)
+    charCache[player] = nil
+end)
+
+refreshPlayerModels()
+
+notify("Aftermath v" .. VERSION, "Loaded. Press Right Shift to toggle the menu.", 7)
+
+M:Notify({
+    title = "Aftermath",
+    text = string.format(
+        "ESP %s | Aim %s",
+        espReady and "ready" or "unavailable",
+        aimReady and "ready" or "unavailable"
+    ),
+    kind = (espReady and aimReady) and "ok" or "warn",
+    duration = 6,
+})
