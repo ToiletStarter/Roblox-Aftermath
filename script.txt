@@ -63,7 +63,7 @@ local M = UI.new({
     accent = Color3.fromRGB(150, 220, 160),
 })
 
-if Workspace.PlaceId and Workspace.PlaceId ~= PLACE_ID then
+if game.PlaceId ~= PLACE_ID then
     notify("Aftermath", "Different place id, some features may not resolve.", 8)
 end
 
@@ -539,8 +539,26 @@ local function setupAim()
     return true
 end
 
-local espReady = setupESP()
-local aimReady = setupAim()
+local okESP, espReady = pcall(setupESP)
+if not okESP then
+    warn("Aftermath: ESP setup failed: " .. tostring(espReady))
+    espReady = false
+end
+
+local okAim, aimReady = pcall(setupAim)
+if not okAim then
+    warn("Aftermath: aim setup failed: " .. tostring(aimReady))
+    aimReady = false
+end
+
+local function panel(name, build)
+    local ok, err = pcall(build)
+    if not ok then
+        warn("Aftermath: " .. name .. " panel failed: " .. tostring(err))
+        M:Notify({ title = "Aftermath", text = name .. " panel failed to build.", kind = "warn", duration = 8 })
+    end
+    return ok
+end
 
 local tabVisuals = M:Tab("Visuals")
 local tabPlayers = tabVisuals:SubTab("Players")
@@ -551,6 +569,7 @@ local tabPlayer = M:Tab("Player")
 local tabMisc = M:Tab("Misc")
 
 if espReady then
+  panel("Visuals", function()
     local secMaster = tabPlayers:Section("Master")
     secMaster:Toggle({
         text = "Enable ESP",
@@ -751,11 +770,13 @@ if espReady then
             State.poiOn = v
         end,
     })
+  end)
 else
     tabPlayers:Section("ESP"):Label("EasyESP failed to load.")
 end
 
 if aimReady then
+  panel("Combat", function()
     local secAim = tabCombat:Section("Aimbot")
     secAim:Toggle({
         text = "Enable",
@@ -913,6 +934,7 @@ if aimReady then
             aim.cfg.predict.speed = v
         end,
     })
+  end)
 else
     tabCombat:Section("Aimbot"):Label("EasyAim failed to load.")
 end
