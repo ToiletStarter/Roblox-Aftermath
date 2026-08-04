@@ -1,4 +1,5 @@
 local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
 local Lighting = game:GetService("Lighting")
@@ -7,7 +8,7 @@ local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 
 local PLACE_ID = 112237800564065
-local VERSION = "2.0.0"
+local VERSION = "2.1.0"
 local BASE = "https://raw.githubusercontent.com/ToiletStarter/CantStopMakingReposForThis/refs/heads/main/"
 
 local Log = {
@@ -68,6 +69,8 @@ local Session = {
     version = VERSION,
     conns = {},
     restore = {},
+    instances = {},
+    unloaded = false,
 }
 
 function Session.track(conn)
@@ -629,6 +632,12 @@ if not okAim then
     aimReady = false
 end
 
+Session.instances = {
+    function() return aimLegit end,
+    function() return aimRage end,
+    function() return esp end,
+}
+
 Session.restore.lighting = {
     Brightness = Lighting.Brightness,
     ClockTime = Lighting.ClockTime,
@@ -639,6 +648,67 @@ Session.restore.lighting = {
 do
     local cam = Workspace.CurrentCamera
     Session.restore.fov = cam and cam.FieldOfView or 70
+end
+
+local function hardUnload()
+    if Session.unloaded then
+        return
+    end
+    Session.unloaded = true
+
+    for _, conn in ipairs(Session.conns) do
+        pcall(function() conn:Disconnect() end)
+    end
+    Session.conns = {}
+
+    for _, getter in ipairs(Session.instances) do
+        local inst = getter()
+        if inst then
+            pcall(function() inst:on(false) end)
+            pcall(function() inst:stop() end)
+            pcall(function() inst:destroy() end)
+        end
+    end
+
+    if cleardrawcache then
+        pcall(cleardrawcache)
+    end
+
+    local l = Session.restore.lighting
+    if l then
+        pcall(function()
+            Lighting.Brightness = l.Brightness
+            Lighting.ClockTime = l.ClockTime
+            Lighting.FogEnd = l.FogEnd
+            Lighting.Ambient = l.Ambient
+            Lighting.OutdoorAmbient = l.OutdoorAmbient
+        end)
+    end
+
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        if cam and Session.restore.fov then
+            cam.FieldOfView = Session.restore.fov
+        end
+    end)
+
+    if GENV[SLOT] == Session then
+        GENV[SLOT] = nil
+    end
+
+    GENV.AftermathUnload = nil
+    Log.info("session", "unloaded")
+end
+
+Session.unload = hardUnload
+GENV.AftermathUnload = hardUnload
+
+do
+    local realClose = M.Close
+    M.Close = function(self, ...)
+        hardUnload()
+        return realClose(self, ...)
+    end
 end
 
 local function panel(name, build)
@@ -661,6 +731,52 @@ local tabCombatZombies = tabCombat:SubTab("Zombies")
 
 local tabPlayer = M:Tab("Self")
 local tabMisc = M:Tab("Misc")
+
+do
+    local sec = tabPlayersV:Section("Panic")
+    sec:Label("End key = unload everything. Delete key = reopen this menu.")
+    sec:Button({
+        text = "UNLOAD EVERYTHING",
+        callback = function() hardUnload() end,
+    })
+    sec:Button({
+        text = "Disable All Visuals",
+        callback = function()
+            State.playerOn = false
+            State.zombieOn = false
+            State.lootOn = false
+            State.weaponOn = false
+            State.ammoOn = false
+            State.containerOn = false
+            State.vehicleOn = false
+            State.corpseOn = false
+            State.poiOn = false
+            State.fullbright = false
+            State.noFog = false
+            State.fovOverride = false
+            if esp then
+                pcall(function() esp:on(false) end)
+                pcall(function() esp.cfg.npc.on = false end)
+            end
+            local l = Session.restore.lighting
+            if l then
+                pcall(function()
+                    Lighting.Brightness = l.Brightness
+                    Lighting.ClockTime = l.ClockTime
+                    Lighting.FogEnd = l.FogEnd
+                    Lighting.Ambient = l.Ambient
+                    Lighting.OutdoorAmbient = l.OutdoorAmbient
+                end)
+            end
+            local cam = Workspace.CurrentCamera
+            if cam and Session.restore.fov then
+                cam.FieldOfView = Session.restore.fov
+            end
+            Log.info("panic", "all visuals disabled")
+            M:Notify({ title = "Aftermath", text = "All visuals disabled.", kind = "ok" })
+        end,
+    })
+end
 
 local function espToggles(section, tree, label)
     section:Toggle({
@@ -1159,8 +1275,8 @@ secDiag:Button({
 })
 
 secServer:Button({
-    text = "Unload Script",
-    callback = function() Session.unload() end,
+    text = "UNLOAD EVERYTHING",
+    callback = function() hardUnload() end,
 })
 
 secServer:Button({
@@ -1284,6 +1400,24 @@ function Session.unload()
         GENV[SLOT] = nil
     end
 end
+
+Session.track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then
+        return
+    end
+    if input.KeyCode == Enum.KeyCode.End then
+        hardUnload()
+        pcall(function()
+            StarterGui:SetCore("SendNotification", {
+                Title = "Aftermath",
+                Text = "Unloaded via End key.",
+                Duration = 5,
+            })
+        end)
+    elseif input.KeyCode == Enum.KeyCode.Delete then
+        M:SetVisible(true)
+    end
+end))
 
 scanRigs(true)
 Log.info("boot", string.format("ready: rigs=%d players=%d zombies=%d",
