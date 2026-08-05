@@ -4,7 +4,7 @@
 
 **A single-file Luau utility script for the Roblox game [Aftermath](https://www.roblox.com/games/112237800564065) — ESP, aim assistance, survival readouts, and a diagnostics reporter.**
 
-[![Version](https://img.shields.io/badge/version-2.1.0-brightgreen?style=flat-square)](https://github.com/ToiletStarter/Roblox-Aftermath/commits/main)
+[![Version](https://img.shields.io/badge/version-3.0.0-brightgreen?style=flat-square)](https://github.com/ToiletStarter/Roblox-Aftermath/commits/main)
 [![Language](https://img.shields.io/badge/language-Luau-blue?style=flat-square)](https://luau.org/)
 [![Place ID](https://img.shields.io/badge/place-112237800564065-lightgrey?style=flat-square)](https://www.roblox.com/games/112237800564065)
 [![Single file](https://img.shields.io/badge/build-none%20required-informational?style=flat-square)](#how-the-loader-works)
@@ -48,7 +48,7 @@ Paste that into your executor and run it. Press **Right Shift** to open the menu
 
 1. Join **Aftermath** (place `112237800564065`).
 2. Run the loadstring above in any executor that supports `loadstring`, `game:HttpGet`, and Drawing-style rendering.
-3. Wait for the `Aftermath v2.1.0 — Loaded` notification.
+3. Wait for the `Aftermath v3.0.0 — Loaded` notification.
 4. Press **Right Shift**.
 
 Player ESP with boxes, names, distance, and health bars is **on by default** — you should see it immediately. Everything else is opt-in.
@@ -76,7 +76,7 @@ Three sub-tabs — **Players**, **Zombies**, **World**.
 <details open>
 <summary><b>Players &amp; Zombies ESP</b></summary>
 
-Players and Zombies are separate toggles with independent enable state. Both draw through the same style configuration, which is edited on the **Players** sub-tab.
+Players and Zombies are separate toggles with **fully independent** ESP instances — each has its own colour, box style, enable state, and range.
 
 | Option | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -92,10 +92,8 @@ Players and Zombies are separate toggles with independent enable state. Both dra
 | Off-screen Arrows | toggle | off | Direction indicators for targets outside view |
 | Chams | toggle | off | |
 | Box Style | dropdown | `corner` | `corner` · `box` · `3d` |
-| Color | colour picker | purple / red | Players default purple, zombies default red |
-| Range | slider | 5000 | 100–5000 studs |
-
-> Zombies share the ESP style set on the Players sub-tab. Only the enable toggle lives on the Zombies sub-tab.
+| Color | colour picker | purple / red | Players default purple, zombies default red — set independently |
+| Range | slider | 5000 | 100–5000 studs, per-instance |
 
 </details>
 
@@ -168,8 +166,8 @@ Lower **Smoothing** is slower and smoother. **Max Step** caps how far the cursor
 
 </details>
 
-<details>
-<summary><b>Rage / Silent — no camera movement</b></summary>
+<details open>
+<summary><b>Silent Aim — no camera movement</b></summary>
 
 | Option | Type | Range / values | Default |
 | --- | --- | --- | --- |
@@ -181,21 +179,44 @@ Lower **Smoothing** is slower and smoother. **Max Step** caps how far the cursor
 | Prediction | toggle | | off |
 | Prediction Factor | slider | 0.000–1.000 | 0.165 |
 
-Silent aim resolves a hit point without moving your view. **Prediction Factor** leads moving targets; it only applies while **Prediction** is enabled.
+Silent aim resolves a hit point from your camera without moving your view and reports it to the game's own damage remote. **Prediction Factor** leads moving targets; it only applies while **Prediction** is enabled.
+</details>
+
+<details>
+<summary><b>Magic Bullet / Bullet TP</b></summary>
+
+| Option | Effect |
+| --- | --- |
+| Magic Bullet | Drops FOV and angle requirements. Hits the best target in range. |
+| Bullet TP | Same as magic bullet, but reports the shot origin at point blank. |
+
+Both stack on top of the Silent Aim configuration and require it to be enabled.
+</details>
+
+<details>
+<summary><b>Weapon Mods</b></summary>
+
+| Option | Effect |
+| --- | --- |
+| Infinite Ammo | Locks `BulletsInMagazine` and `BulletsInReserve` on the active gun slot |
+| No Recoil | `SetGunRecoilMultiplier(0)` |
+| Rapid Fire | `SetGunShootSpeedMultiplier(rate)` |
 
 </details>
 
 ### Self
 
-Read-only survival telemetry plus local visual overrides. All values are read from player attributes and refresh once per second.
+Survival telemetry plus movement and convenience modifications.
 
 | Section | Contents |
 | --- | --- |
-| **Survival** | Health, Hunger, Thirst, Stamina, and a Status line covering bleeding, broken legs, and infection level |
+| **Survival** | Health, Hunger, Thirst, Stamina, and a Status line for bleeding, broken legs, infection |
 | **Squad** | Current squad name, or `none` |
-| **Visual** | No Fog · Fullbright · Override FOV · Field of View slider (40–120) |
+| **Movement** | Custom Walk Speed · Walk Speed · Fly · Fly Speed · Custom Jump Power · Jump Power · Infinite Jump · Infinite Stamina · Third Person · Third Person Distance |
+| **Auto Survival** | Auto Eat · Auto Drink · Auto Heal — triggers the first matching consumable under `Inventory` / `Backpack` when the corresponding stat dips below the threshold |
+| **Visual** | No Fog · Fullbright · Override FOV · Field of View (40–120) |
 
-Original lighting and FOV values are captured at load and restored when you toggle these off or unload.
+Original lighting, FOV, and camera zoom ranges are captured at load and restored on toggle-off or unload.
 
 ### Misc
 
