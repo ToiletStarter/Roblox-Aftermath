@@ -25,7 +25,6 @@ Paste that into your executor and run it. Press **Right Shift** to open the menu
 ## Table of contents
 
 - [Quick start](#quick-start)
-- [Why this script exists](#why-this-script-exists)
 - [Features](#features)
   - [Visuals](#visuals)
   - [Combat](#combat)
@@ -35,7 +34,6 @@ Paste that into your executor and run it. Press **Right Shift** to open the menu
 - [How the loader works](#how-the-loader-works)
 - [Reporting a bug](#reporting-a-bug)
 - [Troubleshooting](#troubleshooting)
-- [How it finds players (and why that was hard)](#how-it-finds-players-and-why-that-was-hard)
 - [Project layout](#project-layout)
 - [Built on](#built-on)
 - [Contributing](#contributing)
@@ -54,14 +52,6 @@ Paste that into your executor and run it. Press **Right Shift** to open the menu
 Player ESP with boxes, names, distance, and health bars is **on by default** — you should see it immediately. Everything else is opt-in.
 
 Re-running the loadstring is safe: the script detects a previous instance, tears it down completely, and reloads. You never need to rejoin to update.
-
----
-
-## Why this script exists
-
-Aftermath does not populate `Player.Character`. Any ESP that iterates `Players:GetPlayers()` and reads `.Character` draws **nothing at all** in this game — which is why most generic script hubs appear to load fine here and then do nothing.
-
-This script works around that with a rig-scanning roster and reads health from attributes rather than a `Humanoid`. See [How it finds players](#how-it-finds-players-and-why-that-was-hard) for the details.
 
 ---
 
@@ -202,6 +192,9 @@ Both stack on top of the Silent Aim configuration and require it to be enabled.
 | No Recoil | `SetGunRecoilMultiplier(0)` |
 | Rapid Fire | `SetGunShootSpeedMultiplier(rate)` |
 
+> [!NOTE]
+> These have not been live-tested yet. The values are wired to the game's own modifier events and the GunSlot, but whether the server honours them is an open question until someone plays with them.
+
 </details>
 
 ### Self
@@ -226,8 +219,8 @@ Original lighting, FOV, and camera zoom ranges are captured at load and restored
 | **Diagnostics** | **Copy Verbose Log**, **Stream Log to Console**, **Rescan Rigs** — see [Reporting a bug](#reporting-a-bug) |
 | **Gun Modifiers** | Recoil, Accuracy (Hipfire), Accuracy (Aimed), Aim Speed, Reload Speed |
 
-> [!WARNING]
-> **Gun Modifiers are client-side.** They fire the game's own modifier events. The server may ignore or reject them, and the section is hidden entirely if the game's `GunModifiers` events are not present. Treat any effect as a bonus, not a guarantee.
+> [!NOTE]
+> **Gun Modifiers are client-side.** They fire the game's own modifier events. The server may ignore or reject them, and the section is hidden entirely if the game's `GunModifiers` events are not present. They have not been live-tested yet — treat any effect as a bonus, not a guarantee.
 
 A **Config** tab is also present, provided by EasyUI, for saving and loading your settings.
 
@@ -259,7 +252,7 @@ The loadstring URL is **permanent**. You never need a new link.
 It then compiles the source, prints the version and short SHA it loaded, and runs it. Every failure mode — download, compile, runtime — produces a Roblox notification and a descriptive error rather than failing silently.
 
 ```
-[Aftermath] loading v2.1.0 (6b14240, source 1)
+[Aftermath] loading v3.0.0 (aa65fb1, source 1)
 ```
 
 Running the loader while a previous instance is active triggers a full teardown of the old one first, so re-running is always the correct way to update.
@@ -344,7 +337,7 @@ The library download failed. The script degrades gracefully — the rest of the 
 <details>
 <summary><b>Lighting or FOV stayed changed after unloading</b></summary>
 
-This was a bug fixed in v2.1. Update by re-running the loadstring. If it still happens, press **End** — the hard unload explicitly restores brightness, clock time, fog, ambient, outdoor ambient, and camera FOV — and file an issue with the log.
+Update by re-running the loadstring. If it still happens, press **End** — the hard unload explicitly restores brightness, clock time, fog, ambient, outdoor ambient, and camera FOV — and file an issue with the log.
 
 </details>
 
@@ -357,35 +350,15 @@ Expected behaviour. The section only builds if the game's `GunModifiers` remote 
 
 ---
 
-## How it finds players (and why that was hard)
-
-A diagnostic run against a live 33-player server found:
-
-- `LocalPlayer.Character` was **nil**.
-- Only **15 models** existed in `game_assets.Entities` — far fewer than the player count.
-- **Zero matches** across seven different strategies for linking a `Player` object to its in-world model.
-
-So the usual approach is impossible here. Instead the script:
-
-1. **Scans for rigs** — any model containing a `HumanoidRootPart` — across several candidate roots.
-2. **Classifies each rig** by whether it carries gear, separating players from infected.
-3. **Excludes the rig nearest the camera** and treats it as your own body.
-4. **Reads health from attributes** (`Health` / `MaxHealth`) or a `States` configuration — never from a `Humanoid`, because the infected use an `AnimationController` *named* `Humanoid` rather than a real one.
-
-This is why the diagnostics tooling is unusually thorough: the roster is heuristic, so the script is built to explain itself when the heuristic is wrong.
-
----
-
 ## Project layout
 
 | File | Purpose |
 | --- | --- |
 | `loader.lua` | Permanent entry point. Commit-pinned fetch with fallbacks. **This is the only URL you need.** |
 | `script.txt` | The script itself — single file, no build step. |
-| `diag.luau` | Standalone ESP diagnostic. Dumps the world structure the script relies on. |
-| `deep.luau` | Standalone deep link-hunt. Tests Player-to-model linking strategies exhaustively. |
+| `probe.luau` | Standalone diagnostic for investigating game updates. Dumps local rig, movement internals, gun slots, consumables, vehicle world models, GunEvent remotes, and the workspace root. |
 
-`diag.luau` and `deep.luau` are development aids, run directly when investigating a game update. Normal use never needs them.
+Normal use never needs `probe.luau` — it is run directly when reverse-engineering game state.
 
 ---
 
