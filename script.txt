@@ -2,13 +2,14 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
+local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
 
 local LP = Players.LocalPlayer
 
 local PLACE_ID = 112237800564065
-local VERSION = "2.2.0"
+local VERSION = "3.0.0"
 local BASE = "https://raw.githubusercontent.com/ToiletStarter/CantStopMakingReposForThis/refs/heads/main/"
 
 local Log = {
@@ -165,19 +166,29 @@ local function refillAmmoFolder()
     return Workspace:FindFirstChild("RefillAmmo")
 end
 
+local gunSystemFolder = ReplicatedStorage:FindFirstChild("GunSystem")
+local gunEventFolder = gunSystemFolder and gunSystemFolder:FindFirstChild("Event")
+local gunSubFolder = gunEventFolder and gunEventFolder:FindFirstChild("GunEvent")
+local gunModifiersFolder = gunEventFolder and gunEventFolder:FindFirstChild("GunModifiers")
+
+local function gunRemote(name)
+    return gunSubFolder and gunSubFolder:FindFirstChild(name)
+end
+
 local GameAssets = gameAssets()
 local Entities = entitiesFolder()
 local GameConfig = ReplicatedStorage:FindFirstChild("GameConfig")
 local MapData = GameConfig and GameConfig:FindFirstChild("MapData")
 local POIFolder = MapData and MapData:FindFirstChild("POI")
-local GunSystem = ReplicatedStorage:FindFirstChild("GunSystem")
-local GunEvent = GunSystem and GunSystem:FindFirstChild("Event")
-local GunModifiers = GunEvent and GunEvent:FindFirstChild("GunModifiers")
+local GunEvent = gunEventFolder
+local GunModifiers = gunModifiersFolder
 
+local ItemSpawns = itemSpawnsFolder()
 Log.info("world", "game_assets=" .. tostring(GameAssets ~= nil)
     .. " Entities=" .. tostring(Entities ~= nil)
     .. " item_spawns=" .. tostring(ItemSpawns ~= nil)
-    .. " GroundWeapons=" .. tostring(groundWeaponsFolder() ~= nil))
+    .. " GroundWeapons=" .. tostring(groundWeaponsFolder() ~= nil)
+    .. " GunSystem=" .. tostring(gunSystemFolder ~= nil))
 
 local State = {
     espOn = false,
@@ -199,7 +210,30 @@ local State = {
 
     aimPlayersOn = false,
     aimZombiesOn = false,
-    aimMode = "legit",
+    silentPlayersOn = false,
+    silentZombiesOn = false,
+    magicBulletOn = false,
+    bulletTpOn = false,
+
+    speedOn = false,
+    speedValue = 16,
+    flyOn = false,
+    flySpeed = 40,
+    jumpOn = false,
+    jumpValue = 50,
+    infJumpOn = false,
+    infStaminaOn = false,
+    thirdPersonOn = false,
+    thirdPersonDist = 12,
+
+    autoEatOn = false,
+    autoDrinkOn = false,
+    autoHealOn = false,
+
+    infAmmoOn = false,
+    noRecoilOn = false,
+    rapidFireOn = false,
+    rapidFireRate = 0.5,
 
     fovValue = 70,
     fovOverride = false,
@@ -251,8 +285,6 @@ local Rigs = {
     lastScan = 0,
     roots = {},
 }
-
-local RIG_ROOTS = {}
 
 local function candidateRoots()
     local roots = {}
@@ -380,9 +412,16 @@ local function rigHealth(model)
     return 1, 1
 end
 
+local LootCache = {}
 local function lootModels()
+    local now = os.clock()
+    if LootCache.t and (now - LootCache.t) < 1.0 then
+        return LootCache.v
+    end
+    LootCache.t = now
     local ItemSpawns = itemSpawnsFolder()
     if not ItemSpawns then
+        LootCache.v = {}
         return {}
     end
     local out = {}
@@ -398,6 +437,7 @@ local function lootModels()
             end
         end
     end
+    LootCache.v = out
     return out
 end
 
@@ -487,6 +527,52 @@ end
 
 local function folderChildren(folder)
     return folder and folder:GetChildren() or {}
+end
+
+local function buildAdapter()
+    local default = EasyAim.Adapters.Default
+    return {
+        targets = function()
+            return {}
+        end,
+        model = function(raw)
+            return raw
+        end,
+        root = default.root,
+        part = default.part,
+        health = function(model, raw)
+            return rigHealth(model)
+        end,
+        alive = function(model, raw, health, maxHealth)
+            if attr(model, "Dead") == true then
+                return false
+            end
+            if maxHealth and maxHealth > 0 then
+                return health > 0
+            end
+            return true
+        end,
+        name = function(model, raw)
+            return model.Name
+        end,
+        team = function(model, raw)
+            return attr(model, "SquadName")
+        end,
+        ignore = function(model, raw)
+            return model == Rigs.localRig
+        end,
+    }
+end
+
+local function rigSource(playersFlag)
+    return function()
+        local list = playersFlag and Rigs.players or Rigs.zombies
+        local out = {}
+        for _, m in ipairs(list) do
+            out[#out + 1] = m
+        end
+        return out
+    end
 end
 
 local esp
@@ -640,11 +726,17 @@ local function setupESP()
     return true
 end
 
+local aimLegit
+local aimSilentPlayers
+local aimSilentZombies
+
 local function setupAim()
     if type(EasyAim) ~= "table" or type(EasyAim.new) ~= "function" then
         Log.err("aim", "library unavailable")
         return false
     end
+
+    local adapter = buildAdapter()
 
     aimLegit = EasyAim.new({
         mode = "legit",
@@ -654,11 +746,12 @@ local function setupAim()
         legit = { smooth = 0.18, maxStep = 60 },
         range = 1500,
     })
-    aimLegit:setAdapter(buildAdapter())
+    aimLegit:setSource(rigSource(true))
+    aimLegit:setAdapter(adapter)
     aimLegit:on(false)
     aimLegit:start()
 
-    aimRage = EasyAim.new({
+    aimSilentPlayers = EasyAim.new({
         mode = "silent",
         hold = false,
         hitbox = { kind = "Head" },
@@ -666,11 +759,25 @@ local function setupAim()
         select = "distance",
         range = 3000,
     })
-    aimRage:setAdapter(buildAdapter())
-    aimRage:on(false)
-    aimRage:start()
+    aimSilentPlayers:setSource(rigSource(true))
+    aimSilentPlayers:setAdapter(adapter)
+    aimSilentPlayers:on(false)
+    aimSilentPlayers:start()
 
-    Log.info("aim", "legit + rage instances created")
+    aimSilentZombies = EasyAim.new({
+        mode = "silent",
+        hold = false,
+        hitbox = { kind = "Head" },
+        fov = { on = false, radius = 0 },
+        select = "distance",
+        range = 3000,
+    })
+    aimSilentZombies:setSource(rigSource(false))
+    aimSilentZombies:setAdapter(adapter)
+    aimSilentZombies:on(false)
+    aimSilentZombies:start()
+
+    Log.info("aim", "legit + silent (players/zombies) instances created")
     return true
 end
 
@@ -688,7 +795,8 @@ end
 
 Session.instances = {
     function() return aimLegit end,
-    function() return aimRage end,
+    function() return aimSilentPlayers end,
+    function() return aimSilentZombies end,
     function() return esp end,
     function() return espZombie end,
 }
@@ -745,6 +853,11 @@ local function hardUnload()
         if cam and Session.restore.fov then
             cam.FieldOfView = Session.restore.fov
         end
+    end)
+
+    pcall(function()
+        LP.CameraMaxZoomDistance = 0.5
+        LP.CameraMinZoomDistance = 0.5
     end)
 
     if GENV[SLOT] == Session then
@@ -1016,124 +1129,237 @@ else
     tabPlayersV:Section("ESP"):Label("EasyESP failed to load.")
 end
 
+local activeSlotCache = {}
+local function findGunSlots(root)
+    local out = {}
+    if not root then return out end
+    local ok, desc = pcall(root.GetDescendants, root)
+    if not ok or type(desc) ~= "table" then return out end
+    for _, d in ipairs(desc) do
+        if d:IsA("ObjectValue") and d.Name == "InventorySlot" then
+            out[#out + 1] = d
+        end
+    end
+    return out
+end
+
+local function activeGunSlot()
+    local now = os.clock()
+    if activeSlotCache.t and (now - activeSlotCache.t) < 0.5 then
+        return activeSlotCache.v
+    end
+    activeSlotCache.t = now
+    for _, slot in ipairs(findGunSlots(LP)) do
+        if slot.Value ~= nil then
+            activeSlotCache.v = slot
+            return slot
+        end
+    end
+    activeSlotCache.v = nil
+    return nil
+end
+
+local lastFire = 0
+local function tryRageFire(inst, playersFlag)
+    if not inst or not aimReady then return end
+    if State.magicBulletOn == false and inst.target == nil then return end
+    local now = os.clock()
+    if (now - lastFire) < 0.05 then return end
+    local origin = Workspace.CurrentCamera and Workspace.CurrentCamera.CFrame.Position
+    if not origin then return end
+
+    local pos, part
+    if State.magicBulletOn or State.bulletTpOn then
+        local rec = inst:pick()
+        if not rec then
+            return
+        end
+        pos, part = inst:resolve(rec)
+    else
+        local dir, hitPos = inst:aimDirection(origin)
+        if not dir then
+            return
+        end
+        pos = hitPos
+        part = inst.hitPart and inst:hitPart(inst.target) or nil
+    end
+
+    if not pos then
+        return
+    end
+
+    local target = part and part.Parent or (inst.target and inst.target.model)
+    if not target or target == Rigs.localRig then
+        return
+    end
+
+    local damageRemote = gunRemote(playersFlag and "DamagePlayer" or "DamageCharacter")
+    if not damageRemote then
+        return
+    end
+
+    lastFire = now
+
+    local originPos = origin
+    if State.bulletTpOn then
+        originPos = pos + Vector3.new(0, 0, 0.01)
+    end
+
+    local ok, err = pcall(function()
+        damageRemote:Fire(target, originPos, pos, {
+            isPlayer = playersFlag,
+            partName = part and part.Name or "Head",
+            model = target,
+        })
+    end)
+    if ok then
+        Log.info("rage", "fire -> " .. target.Name)
+    else
+        Log.err("rage", err)
+    end
+end
+
 local function combatPanel(node, label, playersFlag)
+    local silentInst = playersFlag and aimSilentPlayers or aimSilentZombies
+    local legitInst = aimLegit
+
     local legit = node:Section("Legit")
     legit:Toggle({
         text = "Enable Legit Aim",
         default = false,
         callback = function(v)
             if playersFlag then State.aimPlayersOn = v else State.aimZombiesOn = v end
-            aimLegit:on(State.aimPlayersOn or State.aimZombiesOn)
+            legitInst:on(State.aimPlayersOn or State.aimZombiesOn)
             Log.info("aim", "legit " .. label .. "=" .. tostring(v))
         end,
     })
     legit:Keybind({
         text = "Aim Key",
         default = Enum.UserInputType.MouseButton2,
-        onChange = function(k) if k then aimLegit.cfg.key = k end end,
+        onChange = function(k) if k then legitInst.cfg.key = k end end,
     })
     legit:Dropdown({
         text = "Hitbox",
         options = { "Head", "Torso", "Root", "Nearest" },
         default = "Head",
-        callback = function(v) aimLegit.cfg.hitbox.kind = v end,
+        callback = function(v) legitInst.cfg.hitbox.kind = v end,
     })
     legit:Dropdown({
         text = "Target Priority",
         options = { "fov", "distance", "health" },
         default = "fov",
-        callback = function(v) aimLegit.cfg.select = v end,
+        callback = function(v) legitInst.cfg.select = v end,
     })
     legit:Slider({
         text = "Smoothing",
         min = 0.02, max = 1, step = 0.02, decimals = 2, default = 0.18,
-        callback = function(v) aimLegit.cfg.legit.smooth = v end,
+        callback = function(v) legitInst.cfg.legit.smooth = v end,
     })
     legit:Slider({
         text = "Max Step (px)",
         min = 5, max = 300, step = 5, default = 60,
-        callback = function(v) aimLegit.cfg.legit.maxStep = v end,
+        callback = function(v) legitInst.cfg.legit.maxStep = v end,
     })
     legit:Slider({
         text = "Range",
         min = 50, max = 3000, step = 25, default = 1500,
-        callback = function(v) aimLegit.cfg.range = v end,
+        callback = function(v) legitInst.cfg.range = v end,
     })
     legit:Slider({
         text = "FOV Radius",
         min = 10, max = 600, step = 5, default = 130,
-        callback = function(v) aimLegit.cfg.fov.radius = v end,
+        callback = function(v) legitInst.cfg.fov.radius = v end,
     })
     legit:Toggle({
         text = "Show FOV Circle",
         default = true,
-        callback = function(v) aimLegit.cfg.fov.on = v end,
+        callback = function(v) legitInst.cfg.fov.on = v end,
     })
     legit:Toggle({
         text = "Sticky Target",
         default = false,
-        callback = function(v) aimLegit.cfg.sticky = v end,
+        callback = function(v) legitInst.cfg.sticky = v end,
     })
     legit:Toggle({
         text = "Wall Check",
         default = false,
         callback = function(v)
-            aimLegit.cfg.wallCheck = v
-            aimLegit.cfg.vis.on = v
+            legitInst.cfg.wallCheck = v
+            legitInst.cfg.vis.on = v
         end,
     })
     legit:Toggle({
         text = "Humanize",
         default = false,
-        callback = function(v) aimLegit.cfg.humanize.on = v end,
+        callback = function(v) legitInst.cfg.humanize.on = v end,
     })
 
-    local rage = node:Section("Rage / Silent")
+    local rage = node:Section("Silent Aim")
     rage:Toggle({
         text = "Enable Silent Aim",
         default = false,
         callback = function(v)
-            if playersFlag then State.aimPlayersOn = v else State.aimZombiesOn = v end
-            aimRage:on(State.aimPlayersOn or State.aimZombiesOn)
-            Log.info("aim", "rage " .. label .. "=" .. tostring(v))
+            if playersFlag then State.silentPlayersOn = v else State.silentZombiesOn = v end
+            silentInst:on(State.silentPlayersOn or State.silentZombiesOn)
+            Log.info("aim", "silent " .. label .. "=" .. tostring(v))
         end,
     })
-    rage:Label("Silent aim resolves a hit point without moving your camera.")
+    rage:Label("Silent aim fires from your camera to the resolved hit point without moving your aim.")
     rage:Dropdown({
         text = "Hitbox",
         options = { "Head", "Torso", "Root", "Nearest" },
         default = "Head",
-        callback = function(v) aimRage.cfg.hitbox.kind = v end,
+        callback = function(v) silentInst.cfg.hitbox.kind = v end,
     })
     rage:Dropdown({
         text = "Target Priority",
         options = { "distance", "fov", "health" },
         default = "distance",
-        callback = function(v) aimRage.cfg.select = v end,
+        callback = function(v) silentInst.cfg.select = v end,
     })
     rage:Slider({
         text = "Range",
         min = 50, max = 5000, step = 25, default = 3000,
-        callback = function(v) aimRage.cfg.range = v end,
+        callback = function(v) silentInst.cfg.range = v end,
     })
     rage:Toggle({
         text = "Wall Check",
         default = false,
         callback = function(v)
-            aimRage.cfg.wallCheck = v
-            aimRage.cfg.vis.on = v
+            silentInst.cfg.wallCheck = v
+            silentInst.cfg.vis.on = v
         end,
     })
     rage:Toggle({
         text = "Prediction",
         default = false,
-        callback = function(v) aimRage.cfg.predict.on = v end,
+        callback = function(v) silentInst.cfg.predict.on = v end,
     })
     rage:Slider({
         text = "Prediction Factor",
         min = 0, max = 1, step = 0.005, decimals = 3, default = 0.165,
-        callback = function(v) aimRage.cfg.predict.factor = v end,
+        callback = function(v) silentInst.cfg.predict.factor = v end,
     })
+
+    local extra = node:Section("Extra")
+    extra:Toggle({
+        text = "Magic Bullet",
+        default = false,
+        callback = function(v)
+            State.magicBulletOn = v
+            Log.info("aim", "magic bullet=" .. tostring(v))
+        end,
+    })
+    extra:Label("Ignores FOV and angle checks. Hits the best target within range.")
+    extra:Toggle({
+        text = "Bullet TP",
+        default = false,
+        callback = function(v)
+            State.bulletTpOn = v
+            Log.info("aim", "bullet tp=" .. tostring(v))
+        end,
+    })
+    extra:Label("Like magic bullet, but reports the shot origin at point blank.")
 end
 
 if aimReady then
@@ -1147,15 +1373,138 @@ else
     tabCombatPlayers:Section("Aim"):Label("EasyAim failed to load.")
 end
 
-local secStats = tabPlayer:Section("Survival")
-local labelHealth = secStats:Label("Health: -")
-local labelHunger = secStats:Label("Hunger: -")
-local labelThirst = secStats:Label("Thirst: -")
-local labelStamina = secStats:Label("Stamina: -")
-local labelStatus = secStats:Label("Status: -")
+local secSurvival = tabPlayer:Section("Survival")
+local labelHealth = secSurvival:Label("Health: -")
+local labelHunger = secSurvival:Label("Hunger: -")
+local labelThirst = secSurvival:Label("Thirst: -")
+local labelStamina = secSurvival:Label("Stamina: -")
+local labelStatus = secSurvival:Label("Status: -")
 
 local secSquad = tabPlayer:Section("Squad")
 local labelSquad = secSquad:Label("Squad: none")
+
+local Movement = {}
+function Movement.humanoid()
+    local rig = Rigs.localRig
+    if not rig then return nil end
+    return rig:FindFirstChildOfClass("Humanoid")
+end
+
+function Movement.root()
+    local rig = Rigs.localRig
+    if not rig then return nil end
+    return rootOf(rig)
+end
+
+local flyVec = Vector3.zero
+local flyBegan, flyEnded
+
+local secMove = tabPlayer:Section("Movement")
+secMove:Toggle({
+    text = "Custom Walk Speed",
+    default = false,
+    callback = function(v) State.speedOn = v end,
+})
+secMove:Slider({
+    text = "Walk Speed",
+    min = 0, max = 100, step = 1, default = 16,
+    callback = function(v) State.speedValue = v end,
+})
+secMove:Toggle({
+    text = "Fly",
+    default = false,
+    callback = function(v)
+        State.flyOn = v
+        if not v then
+            local root = Movement.root()
+            if root then
+                root.AssemblyLinearVelocity = Vector3.zero
+            end
+        end
+    end,
+})
+secMove:Slider({
+    text = "Fly Speed",
+    min = 5, max = 200, step = 5, default = 40,
+    callback = function(v) State.flySpeed = v end,
+})
+secMove:Toggle({
+    text = "Custom Jump Power",
+    default = false,
+    callback = function(v) State.jumpOn = v end,
+})
+secMove:Slider({
+    text = "Jump Power",
+    min = 10, max = 250, step = 5, default = 50,
+    callback = function(v) State.jumpValue = v end,
+})
+secMove:Toggle({
+    text = "Infinite Jump",
+    default = false,
+    callback = function(v) State.infJumpOn = v end,
+})
+secMove:Toggle({
+    text = "Infinite Stamina",
+    default = false,
+    callback = function(v) State.infStaminaOn = v end,
+})
+secMove:Toggle({
+    text = "Third Person",
+    default = false,
+    callback = function(v)
+        State.thirdPersonOn = v
+    end,
+})
+secMove:Slider({
+    text = "Third Person Distance",
+    min = 4, max = 30, step = 1, default = 12,
+    callback = function(v) State.thirdPersonDist = v end,
+})
+
+local secSurvive = tabPlayer:Section("Auto Survival")
+secSurvive:Toggle({
+    text = "Auto Eat",
+    default = false,
+    callback = function(v) State.autoEatOn = v end,
+})
+secSurvive:Toggle({
+    text = "Auto Drink",
+    default = false,
+    callback = function(v) State.autoDrinkOn = v end,
+})
+secSurvive:Toggle({
+    text = "Auto Heal",
+    default = false,
+    callback = function(v) State.autoHealOn = v end,
+})
+secSurvive:Label("Uses the first matching consumable in your inventory.")
+
+local function inventoryItems()
+    local out = {}
+    local inv = LP:FindFirstChild("Inventory") or LP:FindFirstChild("Backpack")
+    if not inv then return out end
+    local ok, children = pcall(inv.GetChildren, inv)
+    if not ok then return out end
+    for _, c in ipairs(children) do
+        out[#out + 1] = c
+    end
+    return out
+end
+
+local function useItemByName(match)
+    for _, item in ipairs(inventoryItems()) do
+        local display = attr(item, "DisplayName") or item.Name
+        if display and display:lower():find(match) then
+            local useFn = item:FindFirstChild("Use") or item:FindFirstChild("UseItem")
+            if useFn and useFn:IsA("RemoteEvent") then
+                pcall(function() useFn:FireServer() end)
+                Log.info("survive", "used " .. tostring(display))
+                return true
+            end
+        end
+    end
+    return false
+end
 
 local secVisual = tabPlayer:Section("Visual")
 secVisual:Toggle({
@@ -1241,26 +1590,6 @@ local function buildReport()
     end
     add("")
 
-    add("--- RIG SAMPLES (first 5) ---")
-    for i = 1, math.min(5, #rigs.all) do
-        local m = rigs.all[i]
-        local hp, maxhp = rigHealth(m)
-        local root = rootOf(m)
-        add(string.format("[%d] %s", i, m.Name))
-        add("     parent   : " .. tostring(m.Parent and m.Parent:GetFullName()))
-        add("     class    : " .. m.ClassName)
-        add("     root     : " .. tostring(root and root.Name or "NONE"))
-        add(string.format("     health   : %s / %s", tostring(hp), tostring(maxhp)))
-        add("     playerish: " .. tostring(looksLikePlayerRig(m)))
-        local kids = {}
-        for _, c in ipairs(m:GetChildren()) do
-            kids[#kids + 1] = c.ClassName .. ":" .. c.Name
-            if #kids >= 10 then break end
-        end
-        add("     children : " .. table.concat(kids, ", "))
-    end
-    add("")
-
     add("--- ESP STATE ---")
     if esp then
         add("cfg.on          : " .. tostring(esp.cfg.on))
@@ -1283,13 +1612,13 @@ local function buildReport()
     add("")
 
     add("--- AIM STATE ---")
-    for name, inst in pairs({ legit = aimLegit, rage = aimRage }) do
+    for name, inst in pairs({ legit = aimLegit, silentPlayers = aimSilentPlayers, silentZombies = aimSilentZombies }) do
         if inst then
             add(name .. ".on      : " .. tostring(inst.cfg.on))
             add(name .. ".mode    : " .. tostring(inst.cfg.mode))
             add(name .. ".running : " .. tostring(inst.running))
-            local ok, roster = pcall(function() return #inst:build() end)
-            add(name .. ".roster  : " .. (ok and tostring(roster) or "ERROR"))
+            local okRoster, roster = pcall(function() return #inst:build() end)
+            add(name .. ".roster  : " .. (okRoster and tostring(roster) or "ERROR"))
         end
     end
     add("")
@@ -1306,7 +1635,7 @@ local function buildReport()
 
     add("--- TOGGLES ---")
     for k, v in pairs(State) do
-        add(string.format("  %-16s = %s", k, tostring(v)))
+        add(string.format("  %-20s = %s", k, tostring(v)))
     end
     add("")
 
@@ -1394,6 +1723,59 @@ if GunModifiers then
     bind("Reload Speed", "SetGunReloadSpeedMultiplier", 1, 0, 3)
 end
 
+if gunSubFolder then
+    local secGun2 = tabCombat:Section("Weapon Mods")
+    secGun2:Toggle({
+        text = "Infinite Ammo",
+        default = false,
+        callback = function(v)
+            State.infAmmoOn = v
+            Log.info("gun", "infinite ammo=" .. tostring(v))
+        end,
+    })
+    secGun2:Toggle({
+        text = "No Recoil",
+        default = false,
+        callback = function(v)
+            State.noRecoilOn = v
+            if GunModifiers then
+                local ev = GunModifiers:FindFirstChild("SetGunRecoilMultiplier")
+                if ev then
+                    pcall(function() ev:Fire(v and 0 or 1) end)
+                end
+            end
+            Log.info("gun", "no recoil=" .. tostring(v))
+        end,
+    })
+    secGun2:Toggle({
+        text = "Rapid Fire",
+        default = false,
+        callback = function(v)
+            State.rapidFireOn = v
+            if GunModifiers then
+                local ev = GunModifiers:FindFirstChild("SetGunShootSpeedMultiplier")
+                if ev then
+                    pcall(function() ev:Fire(v and math.clamp(State.rapidFireRate, 0.05, 1) or 1) end)
+                end
+            end
+            Log.info("gun", "rapid fire=" .. tostring(v))
+        end,
+    })
+    secGun2:Slider({
+        text = "Rapid Fire Rate",
+        min = 0.05, max = 1, step = 0.05, decimals = 2, default = 0.5,
+        callback = function(v)
+            State.rapidFireRate = v
+            if GunModifiers and State.rapidFireOn then
+                local ev = GunModifiers:FindFirstChild("SetGunShootSpeedMultiplier")
+                if ev then
+                    pcall(function() ev:Fire(v) end)
+                end
+            end
+        end,
+    })
+end
+
 M:ConfigTab()
 
 M:Every("aftermath:refresh", 1, function()
@@ -1457,7 +1839,7 @@ function Session.unload()
         pcall(function() conn:Disconnect() end)
     end
     Session.conns = {}
-    for _, inst in ipairs({ aimLegit, aimRage, esp }) do
+    for _, inst in ipairs({ aimLegit, aimSilentPlayers, aimSilentZombies, esp, espZombie }) do
         if inst then
             pcall(function() inst:destroy() end)
         end
@@ -1477,6 +1859,10 @@ function Session.unload()
         if cam and Session.restore.fov then
             cam.FieldOfView = Session.restore.fov
         end
+    end)
+    pcall(function()
+        LP.CameraMaxZoomDistance = 0.5
+        LP.CameraMinZoomDistance = 0.5
     end)
     pcall(function() M:Close() end)
     if GENV[SLOT] == Session then
@@ -1499,6 +1885,11 @@ Session.track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
         end)
     elseif input.KeyCode == Enum.KeyCode.Delete then
         M:SetVisible(true)
+    elseif input.KeyCode == Enum.KeyCode.Space and State.infJumpOn then
+        local hum = Movement.humanoid()
+        if hum then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
     end
 end))
 
@@ -1544,6 +1935,135 @@ local function bindCameraFov()
 end
 bindCameraFov()
 Session.track(Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindCameraFov))
+
+local lastSelfTick = 0
+local tickSignal = RunService.Stepped or RunService.Heartbeat or RunService.RenderStepped
+Session.track(tickSignal:Connect(function(dt)
+    local now = os.clock()
+    if (now - lastSelfTick) < 0.033 then
+        return
+    end
+    lastSelfTick = now
+
+    if State.infStaminaOn then
+        pcall(function()
+            LP:SetAttribute("Stamina", attr(LP, "MaxStamina") or 100)
+        end)
+    end
+
+    if State.thirdPersonOn then
+        pcall(function()
+            LP.CameraMaxZoomDistance = State.thirdPersonDist
+            LP.CameraMinZoomDistance = State.thirdPersonDist
+            LP.CameraMode = Enum.CameraMode.Classic
+        end)
+    else
+        pcall(function()
+            LP.CameraMaxZoomDistance = 0.5
+            LP.CameraMinZoomDistance = 0.5
+        end)
+    end
+
+    local hum = Movement.humanoid()
+    if hum then
+        if State.speedOn and hum.WalkSpeed ~= State.speedValue then
+            hum.WalkSpeed = State.speedValue
+        end
+        if State.jumpOn and hum.JumpPower ~= State.jumpValue then
+            hum.JumpPower = State.jumpValue
+        end
+    end
+
+    if State.flyOn then
+        local root = Movement.root()
+        if root then
+            local cam = Workspace.CurrentCamera
+            local dir = Vector3.zero
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += cam.CFrame.UpVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= cam.CFrame.UpVector end
+            local mag = dir.Magnitude
+            if mag > 0 then
+                dir = dir.Unit * State.flySpeed
+            end
+            root.AssemblyLinearVelocity = dir
+        end
+    end
+
+    if State.autoEatOn and (now - (Movement.lastEat or 0)) > 4 then
+        local hunger = attr(LP, "Hunger")
+        local maxH = attr(LP, "MaxHunger") or 100
+        if hunger and hunger < maxH * 0.6 then
+            if useItemByName("food") or useItemByName("bread") or useItemByName("canned")
+               or useItemByName("mre") or useItemByName("apple") or useItemByName("meat") then
+                Movement.lastEat = now
+            end
+        end
+    end
+    if State.autoDrinkOn and (now - (Movement.lastDrink or 0)) > 4 then
+        local thirst = attr(LP, "Thirst")
+        local maxT = attr(LP, "MaxThirst") or 100
+        if thirst and thirst < maxT * 0.6 then
+            if useItemByName("water") or useItemByName("bottle") or useItemByName("drink")
+               or useItemByName("soda") or useItemByName("canteen") then
+                Movement.lastDrink = now
+            end
+        end
+    end
+    if State.autoHealOn and (now - (Movement.lastHeal or 0)) > 5 then
+        local hp = attr(LP, "Health")
+        local maxHp = attr(LP, "MaxHealth") or 100
+        if hp and hp < maxHp * 0.7 then
+            if useItemByName("bandage") or useItemByName("medkit") or useItemByName("medicine")
+               or useItemByName("heal") or useItemByName("rags") then
+                Movement.lastHeal = now
+            end
+        end
+    end
+
+    if State.infAmmoOn then
+        local slot = activeGunSlot()
+        if slot then
+            local mag = slot:FindFirstChild("BulletsInMagazine")
+            local reserve = slot:FindFirstChild("BulletsInReserve")
+            if mag and mag.Value < 30 then
+                mag.Value = 30
+            end
+            if reserve and reserve.Value < 300 then
+                reserve.Value = 300
+            end
+        end
+    end
+
+    if State.rapidFireOn then
+        pcall(function()
+            local now2 = os.clock()
+            if (now2 - (Movement.lastRapid or 0)) >= State.rapidFireRate then
+                Movement.lastRapid = now2
+                if mouse1press then
+                    mouse1press()
+                    task.delay(0.03, function()
+                        if mouse1release then
+                            mouse1release()
+                        end
+                    end)
+                end
+            end
+        end)
+    end
+
+    if aimReady then
+        if State.silentPlayersOn then
+            tryRageFire(aimSilentPlayers, true)
+        end
+        if State.silentZombiesOn then
+            tryRageFire(aimSilentZombies, false)
+        end
+    end
+end))
 
 scanRigs(true)
 Log.info("boot", string.format("ready: rigs=%d players=%d zombies=%d",
